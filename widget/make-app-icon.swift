@@ -8,9 +8,11 @@
 // below cannot drift from the catalog. The PNGs are committed; this script is
 // how they are regenerated, not a build step.
 //
-// The artwork is the widget's own language: charcoal ground, a terracotta
-// usage ring, and the header's swap mark in off-white. Everything is laid out
-// on a 1024pt canvas and scaled, so every size is the same drawing.
+// The artwork is "another you": two identical busts, the second standing just
+// behind and beside the first -- the account that takes over. A midnight
+// plate, the front figure in off-white, the one behind in the widget's clay
+// accent, deepened. Everything is laid out on a 1024pt canvas and scaled, so
+// every size is the same drawing.
 
 import CoreGraphics
 import Foundation
@@ -55,64 +57,132 @@ func color(_ hex: UInt32, alpha: CGFloat = 1) -> CGColor {
         alpha: alpha)
 }
 
-let charcoal = color(0x141413)
-let terracotta = color(0xD97757)
-let offWhite = color(0xFAF9F5)
-let ringTrack = color(0xFAF9F5, alpha: 0.10)
+/// Each fill is a top-to-bottom pair: a little light from above, no more.
+let plateColors = [color(0x2E3350), color(0x151827)]    // midnight indigo
+let frontColors = [color(0xFFFDF8), color(0xE8E1D3)]    // off-white
+let behindColors = [color(0xDC8A6C), color(0x9C4032)]   // the widget's clay, deeper and rosier
+
+// MARK: - Figures
+
+/// A bust: a round head over a rounded shoulder line that runs off the plate's
+/// bottom edge. Both busts are this one shape, only moved -- the same person.
+struct Bust {
+    var headX: CGFloat
+    var headY: CGFloat   // the head's centre
+
+    static let head: CGFloat = 122       // radius
+    static let neck: CGFloat = 30        // gap between head and shoulders
+    static let shoulderWidth: CGFloat = 500
+    static let shoulderRise: CGFloat = 190  // shoulder top above the curve's base
+
+    var headPath: CGPath {
+        CGPath(ellipseIn: CGRect(
+            x: headX - Bust.head, y: headY - Bust.head, width: 2 * Bust.head, height: 2 * Bust.head),
+            transform: nil)
+    }
+
+    var shoulderPath: CGPath {
+        let top = headY - Bust.head - Bust.neck
+        let base = top - Bust.shoulderRise
+        let half = Bust.shoulderWidth / 2
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: headX - half, y: 0))
+        path.addLine(to: CGPoint(x: headX - half, y: base))
+        // Two quarter-ellipses meeting at the top: round, not domed.
+        path.addCurve(
+            to: CGPoint(x: headX, y: top),
+            control1: CGPoint(x: headX - half, y: base + Bust.shoulderRise * 0.56),
+            control2: CGPoint(x: headX - half * 0.56, y: top))
+        path.addCurve(
+            to: CGPoint(x: headX + half, y: base),
+            control1: CGPoint(x: headX + half * 0.56, y: top),
+            control2: CGPoint(x: headX + half, y: base + Bust.shoulderRise * 0.56))
+        path.addLine(to: CGPoint(x: headX + half, y: 0))
+        path.closeSubpath()
+        return path
+    }
+
+    var path: CGPath {
+        let path = CGMutablePath()
+        path.addPath(headPath)
+        path.addPath(shoulderPath)
+        return path
+    }
+}
+
+/// The one in front sits left of centre; the other stands behind, up and to
+/// the right, so its head and shoulder show clearly past the first.
+let front = Bust(headX: 432, headY: 578)
+let behind = Bust(headX: 602, headY: 660)
+/// The plate-coloured gap cut around the front figure, so the two read as two
+/// even where their colours are close.
+let separation: CGFloat = 34
 
 // MARK: - Drawing
 
-// Ring and mark are deliberately heavy: at 16pt a stroke this wide is still
-// about a pixel, and anything finer disappears in the gallery sidebar.
-let ringRadius: CGFloat = 285
-let ringWidth: CGFloat = 72
-/// A usage gauge: clockwise from 12 o'clock, stopping short of a full circle.
-let ringSweep: CGFloat = 280
-
-let markReach: CGFloat = 140   // half the length of each arrow shaft
-let markOffset: CGFloat = 100   // each shaft's distance from the centre line
-let markHead: CGFloat = 66     // arrowhead depth along the shaft
-let markWidth: CGFloat = 58
+func fillGradient(_ path: CGPath, _ colors: [CGColor], in context: CGContext, top: CGFloat, bottom: CGFloat) {
+    context.saveGState()
+    context.addPath(path)
+    context.clip()
+    let gradient = CGGradient(colorsSpace: nil, colors: colors as CFArray, locations: [0, 1])!
+    context.drawLinearGradient(
+        gradient, start: CGPoint(x: 0, y: top), end: CGPoint(x: 0, y: bottom),
+        options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+    context.restoreGState()
+}
 
 func draw(into context: CGContext) {
-    context.setFillColor(charcoal)
-    context.addPath(squirclePath(side: artwork, center: center))
+    let plate = squirclePath(side: artwork, center: center)
+    let plateTop = center.y + artwork / 2, plateBottom = center.y - artwork / 2
+
+    // The plate, with the soft drop shadow every Big Sur icon carries.
+    context.saveGState()
+    context.setShadow(offset: CGSize(width: 0, height: -10), blur: 28, color: color(0x000000, alpha: 0.35))
+    context.addPath(plate)
+    context.setFillColor(plateColors[1])
     context.fillPath()
+    context.restoreGState()
+    fillGradient(plate, plateColors, in: context, top: plateTop, bottom: plateBottom)
 
-    context.setLineCap(.round)
+    context.saveGState()
+    context.addPath(plate)
+    context.clip()
+    // A soft glow high on the plate, behind the heads: depth, not a feature.
+    let glow = CGGradient(
+        colorsSpace: nil, colors: [color(0x6A74B0, alpha: 0.35), color(0x6A74B0, alpha: 0)] as CFArray,
+        locations: [0, 1])!
+    context.drawRadialGradient(
+        glow, startCenter: CGPoint(x: 540, y: 700), startRadius: 0,
+        endCenter: CGPoint(x: 540, y: 700), endRadius: 460, options: [])
+
+    // The figure behind, with the front figure's outline cut out of it. The
+    // cut happens inside a transparency layer, so it clears only this figure
+    // and the plate shows through.
+    context.beginTransparencyLayer(auxiliaryInfo: nil)
+    fillGradient(behind.path, behindColors, in: context, top: behind.headY + Bust.head, bottom: plateBottom)
+    context.setBlendMode(.clear)
+    context.addPath(front.path)
+    context.fillPath()
+    context.setLineWidth(2 * separation)
     context.setLineJoin(.round)
-
-    context.setStrokeColor(ringTrack)
-    context.setLineWidth(ringWidth)
-    context.addArc(
-        center: center, radius: ringRadius,
-        startAngle: 0, endAngle: 2 * .pi, clockwise: false)
+    context.addPath(front.path)
     context.strokePath()
+    context.endTransparencyLayer()
 
-    context.setStrokeColor(terracotta)
-    let start: CGFloat = .pi / 2                                 // 12 o'clock
-    context.addArc(
-        center: center, radius: ringRadius,
-        startAngle: start, endAngle: start - ringSweep * .pi / 180, clockwise: true)
+    // The figure in front, lit from above with a faint shadow onto the plate.
+    context.saveGState()
+    context.setShadow(offset: CGSize(width: 0, height: -6), blur: 18, color: color(0x000000, alpha: 0.30))
+    context.beginTransparencyLayer(auxiliaryInfo: nil)
+    fillGradient(front.path, frontColors, in: context, top: front.headY + Bust.head, bottom: plateBottom)
+    context.endTransparencyLayer()
+    context.restoreGState()
+
+    // A hairline of light along the plate's upper rim.
+    context.setStrokeColor(color(0xFFFFFF, alpha: 0.10))
+    context.setLineWidth(6)
+    context.addPath(plate)
     context.strokePath()
-
-    // The header's swap mark: upper arrow to the right, lower to the left.
-    context.setStrokeColor(offWhite)
-    context.setLineWidth(markWidth)
-    for direction in [CGFloat(1), CGFloat(-1)] {
-        let shaft = center.y + markOffset * direction
-        let tip = center.x + markReach * direction
-        let tail = center.x - markReach * direction
-        context.move(to: CGPoint(x: tail, y: shaft))
-        context.addLine(to: CGPoint(x: tip, y: shaft))
-        context.strokePath()
-
-        let notch = tip - markHead * direction
-        context.move(to: CGPoint(x: notch, y: shaft + markHead))
-        context.addLine(to: CGPoint(x: tip, y: shaft))
-        context.addLine(to: CGPoint(x: notch, y: shaft - markHead))
-        context.strokePath()
-    }
+    context.restoreGState()
 }
 
 func render(pixels: Int) -> CGImage {
