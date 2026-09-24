@@ -1120,6 +1120,10 @@ class TestAutoCommand:
         assert load_settings(backup).enabled is True
         assert list(folder.iterdir()) == []
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="asserts POSIX permission bits; Windows has no equivalent chmod semantics",
+    )
     def test_the_backend_creates_the_request_directory(self, temp_home):
         from altero.paths import get_backup_root
 
@@ -1987,6 +1991,14 @@ class TestServiceCommand:
         assert "invalid choice" in capsys.readouterr().err
         assert "install" not in seen and "uninstall" not in seen
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason=(
+            "acquires the engine lock while sys.platform is patched to darwin; "
+            "that also flips locking.py's own darwin/win32 branch, so it reaches "
+            "fcntl, which real Windows Python never imported"
+        ),
+    )
     def test_status_reports_program_path_and_engine_lock(
         self, monkeypatch, capsys, temp_home
     ):

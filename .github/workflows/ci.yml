@@ -6,30 +6,63 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   test:
+    name: test (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    # macOS: a `security` call can block on an invisible SecurityAgent
+    # dialog; faulthandler below dumps every thread's stack past its budget,
+    # and this is the backstop if even that hangs.
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && 15 || 10 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        # Matches [project] requires-python (">=3.12") and the classifiers
+        # in pyproject.toml (3.12, 3.13, 3.14).
+        python-version: ['3.12', '3.13', '3.14']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # uv (not pip) so the PEP 735 dev dependency-group -- pytest,
+      # pytest-asyncio, pytest-xdist -- installs from the committed
+      # lockfile, same as local development.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+
+      # menubar (rumps) carries its own `sys_platform == 'darwin'` marker,
+      # so the extra resolves to nothing on Linux/Windows -- but only macOS
+      # needs it installed.
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: uv sync --locked --extra menubar
+
+      - name: Install dependencies
+        if: runner.os != 'macOS'
+        run: uv sync --locked
+
+      # faulthandler_timeout is set everywhere the whole suite runs on
+      # macOS, matching the previous macos-keychain job: it caught a hung
+      # `security` call that the default timeout alone would only kill
+      # silently.
+      - name: Run tests
+        run: uv run pytest -q ${{ runner.os == 'macOS' && '-o faulthandler_timeout=600' || '' }}
+
+  build-sanity:
+    name: build sanity (sdist + wheel)
     runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      # uv (not pip) so the PEP 735 dev dependency-group — pytest,
-      # pytest-asyncio — installs from the committed lockfile, same as local
-      # development.
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
-        with:
-          python-version: '3.12'
-
-      - name: Install dependencies
-        run: uv sync --locked
-
-      - name: Run tests
-        run: uv run pytest
-
-  test-windows:
-    runs-on: windows-latest
-
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -37,41 +70,48 @@ jobs:
         uses: astral-sh/setup-uv@v6
         with:
           python-version: '3.12'
+          enable-cache: true
 
-      - name: Install dependencies
-        run: uv sync --locked
+      - name: Build sdist and wheel
+        run: uv build
 
-      - name: Run tests
-        # Includes the TUI tests: the Textual TUI (unlike the old curses one)
-        # runs on stock Windows, and this job is the proof.
-        run: uv run pytest
+      - name: Check distributions with twine
+        run: uv run --with twine twine check dist/*
 
-  # The id is historical: the job runs the whole suite, not only the Keychain
-  # tests. Renaming it drops any branch protection that requires it.
-  macos-keychain:
+  widget:
+    name: widget (build, test, lint)
     runs-on: macos-latest
-
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
-        with:
-          python-version: '3.12'
+      - name: Install xcodegen
+        run: brew install xcodegen
 
-      - name: Install dependencies
-        run: uv sync --locked
+      - name: Install swiftlint
+        run: brew install swiftlint
 
-      - name: Run the whole suite (not only the Keychain files)
-        # THE NARROW SELECTION WAS A BLIND SPOT, not a saving. Three cases
-        # failed on macOS -- one asserting the Linux XDG layout, two because a
-        # usable Keychain takes the write and leaves no `.enc` to chmod --
-        # while every job stayed green, because this job never ran them. A merge that
-        # restores a two-file selection here re-opens that hole invisibly:
-        # those cases pass now, they would simply stop running.
-        #
-        # faulthandler dumps every thread's stack past the budget, the only
-        # clue when a `security` call blocks on an invisible SecurityAgent
-        # dialog. `timeout-minutes` is the backstop.
-        timeout-minutes: 15
-        run: uv run pytest -o faulthandler_timeout=600
+      # Signing.xcconfig is gitignored (per-developer Team ID). The example's
+      # blank DEVELOPMENT_TEAM is fine: the build below is unsigned.
+      - name: Set up Signing.xcconfig
+        working-directory: widget
+        run: cp Signing.xcconfig.example Signing.xcconfig
+
+      - name: Generate Xcode project
+        working-directory: widget
+        run: xcodegen generate
+
+      # Unsigned: CI has no Apple Developer Team ID / certificate. The
+      # golden fixture (tests/fixtures/snapshot_golden.json) is bundled as a
+      # test resource straight from its repo path by project.yml, so the
+      # checkout alone is enough for it to resolve.
+      - name: Build and test (unsigned)
+        working-directory: widget
+        run: |
+          xcodebuild -project AlteroWidget.xcodeproj -scheme AlteroWidgetTests \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO test
+
+      - name: SwiftLint
+        working-directory: widget
+        run: swiftlint
