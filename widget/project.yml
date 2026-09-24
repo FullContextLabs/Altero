@@ -1,0 +1,149 @@
+# XcodeGen spec for the Altero macOS widget.
+#
+# The .xcodeproj is generated (`xcodegen generate`) and gitignored: a
+# project.pbxproj conflicts badly in git and hides real changes in review.
+# Everything that matters about the project lives in this file.
+
+name: AlteroWidget
+
+options:
+  bundleIdPrefix: com.fullcontextlabs.altero
+  deploymentTarget:
+    macOS: "14.0"   # Button(intent:)/Toggle(isOn:intent:) need macOS 14
+  createIntermediateGroups: true
+  # Signing.xcconfig is gitignored (it holds a per-developer Team ID), so a
+  # fresh clone does not have one until it is copied from the .example.
+  # Generation must not fail on that; the build will, with a clear message.
+  disabledValidations: [missingConfigFiles]
+
+configs:
+  Debug: debug
+  Release: release
+
+# DEVELOPMENT_TEAM only. Kept out of git so filling in one value locally is
+# the whole signing setup -- see README.md.
+configFiles:
+  Debug: Signing.xcconfig
+  Release: Signing.xcconfig
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    CODE_SIGN_STYLE: Automatic
+    # Required for Developer ID / notarization, which is how this ships.
+    ENABLE_HARDENED_RUNTIME: YES
+    # Overridden per build by build-widget so every install/release gets a
+    # unique CFBundleVersion; this is only the fallback for a plain
+    # xcodebuild invocation. Host and extension must match or embedding
+    # validation fails, so both Info.plists key off this one setting.
+    CURRENT_PROJECT_VERSION: "1"
+
+targets:
+  # Stub. WidgetKit extensions cannot ship standalone, so the widget needs a
+  # host; this one exists only to be that container. The real UI is the altero
+  # CLI/TUI and the menu bar -- do not grow this into a second front end.
+  AlteroWidgetHost:
+    type: application
+    platform: macOS
+    sources:
+      - path: App
+      # For `altero://start-backend`: the snapshot/request paths and the
+      # start marker, from the same files the extension uses, so the two
+      # cannot disagree about where anything lives.
+      - path: Widget/SnapshotFile.swift
+      - path: Shared/Snapshot.swift
+      - path: Shared/BackendStart.swift
+      - path: Shared/RequestDrop.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.fullcontextlabs.altero
+        # The widget gallery's sidebar uses LaunchServices' display name,
+        # which for an unlocalized bundle falls back to the .app filename --
+        # not CFBundleName/CFBundleDisplayName below. So the product itself
+        # has to be named Altero.app.
+        PRODUCT_NAME: Altero
+        # App/Assets.xcassets/AppIcon.appiconset -- drawn by make-app-icon.swift
+        # and committed. Without an icon the gallery sidebar and Finder show a
+        # blank placeholder.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_ENTITLEMENTS: App/AlteroWidgetHost.entitlements
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+    info:
+      path: App/Info.plist
+      properties:
+        # The widget gallery groups widgets under the host app's name, and
+        # LaunchServices shows CFBundleName for an unlocalized bundle, so both
+        # say "Altero".
+        CFBundleDisplayName: Altero
+        CFBundleName: Altero
+        # The Info.plist is written by XcodeGen, not by Xcode's own generator,
+        # so the key that points LaunchServices at the compiled AppIcon has to
+        # be stated here.
+        CFBundleIconName: AppIcon
+        LSApplicationCategoryType: public.app-category.developer-tools
+        # Must match the extension's -- see CURRENT_PROJECT_VERSION above.
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # No Dock icon by default: a launch to handle altero://start-backend
+        # runs altero and quits without showing anything. A plain launch opts
+        # back in (setActivationPolicy(.regular)) while its window is open.
+        LSUIElement: true
+        # The widget's "Start backend" control is a Link to this URL. A widget
+        # cannot run a process and its intents run in the sandboxed extension,
+        # so the host app has to be the one that runs `altero service start`.
+        CFBundleURLTypes:
+          - CFBundleURLName: com.fullcontextlabs.altero.start-backend
+            CFBundleURLSchemes: [altero]
+    dependencies:
+      - target: AlteroWidgetExtension
+        embed: true
+
+  AlteroWidgetExtension:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: Widget
+      # The snapshot model is shared verbatim with the test target rather than
+      # linked through a framework: two sources entries beat a third product.
+      - path: Shared
+    settings:
+      base:
+        # Must stay prefixed by the host's bundle id.
+        #
+        # chronod caches a widget descriptor -- including the gallery's
+        # display name -- keyed on the extension's bundle id, in a TCC-protected
+        # store that cannot be cleared from a script. Renaming the widget
+        # therefore means a new extension id, never a reused one.
+        PRODUCT_BUNDLE_IDENTIFIER: com.fullcontextlabs.altero.widget
+        # Sandbox + a read exception for the one snapshot file. No App Group:
+        # the writer is the user's unsigned PyPI `altero`, which cannot hold the
+        # entitlement a group container demands.
+        CODE_SIGN_ENTITLEMENTS: Widget/AlteroWidgetExtension.entitlements
+        SKIP_INSTALL: YES
+    info:
+      path: Widget/Info.plist
+      properties:
+        CFBundleDisplayName: Altero
+        # Must match the host's -- see CURRENT_PROJECT_VERSION above.
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+
+  # Logic tests only -- no TEST_HOST. The decoder is pure, so hosting the tests
+  # in the app would only couple them to the app's signing.
+  AlteroWidgetTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests
+      - path: Shared
+      # The Python producer's golden fixture, referenced where it already
+      # lives. Copying it into widget/ would give the contract two sources of
+      # truth, which is the one thing the fixture exists to prevent.
+      - path: ../tests/fixtures/snapshot_golden.json
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.fullcontextlabs.altero.tests
+        # The tests read the fixture out of their own bundle; a sandbox here
+        # would only make the bundle harder to load.
+        CODE_SIGN_ENTITLEMENTS: ""

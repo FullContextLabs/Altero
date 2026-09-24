@@ -1,0 +1,625 @@
+# altero widget (macOS)
+
+A WidgetKit widget that shows Claude account usage at a glance on the desktop.
+
+It reads the JSON document `altero snapshot` produces (see
+`src/altero/snapshot_json.py`) from `~/.altero/snapshot.json`.
+That schema, and that path, are the entire contract between the Python and the
+Swift, which is why the widget lives in this repo rather than its own.
+
+**This is a display surface, not a second front end.** It cannot add or remove
+accounts or change `altero` state itself. Its two actions -- the auto-switch
+toggle and "Switch to this account" -- only *ask*: each drops a request file
+that the backend applies (see "Auto-switch toggle" and "Switch to this
+account" below). "Start backend" hands off to the host app (see "Start
+backend"). A sandboxed extension cannot
+write `~/.claude.json` or `settings.json`, reach the Keychain, take the switch
+locks, or exec `altero`. All of that stays in the CLI, the TUI and the menu bar.
+
+WidgetKit's own ceiling is separate and looser: it allows `Button(intent:)` and
+`Toggle(isOn:intent:)` — no text fields, scrolling, selection or sheets — and
+an intent runs in the extension's process, which always has read-write access
+to *its own* container. So an intent can change what the widget **shows**
+(cycle the displayed account, switch which window is shown, force a refresh),
+not what `altero` **does** -- except by dropping a request into the one
+directory it may write, for the backend to apply.
+
+The host app here is a stub whose job is to be the container the widget
+extension ships inside (WidgetKit extensions cannot be installed standalone),
+and to run `altero service start` when the widget's Start control asks. **It
+has no user interface at all** -- no window, no menu, no alert, no Dock icon.
+Every launch either answers a question and exits or does its work and quits.
+That is structural, not an omission: a tap on a widget region that carries no
+control falls through to LaunchServices as a plain launch of this app, so the
+only way a tap can never summon a window is for there to be no window to
+summon.
+
+## Prerequisites
+
+- Xcode 16 or later (developed against Xcode 27, macOS 27.0 SDK)
+- [XcodeGen](https://github.com/yonaskolb/XcodeGen) — `brew install xcodegen`
+- Optional: `brew install swiftlint` — `swiftlint` from this directory
+- An Apple Developer account. The extension is sandboxed and signing is
+  automatic, so a Team ID is needed to build.
+
+## Build
+
+The `.xcodeproj` is generated and gitignored, so generate it first:
+
+```bash
+cd widget
+cp Signing.xcconfig.example Signing.xcconfig   # once
+xcodegen generate
+```
+
+Then open `AlteroWidget.xcodeproj`, or build from the command line:
+
+```bash
+xcodebuild -scheme AlteroWidgetHost -configuration Debug build
+```
+
+Re-run `xcodegen generate` after adding, removing or renaming a source file, or
+after editing `project.yml`.
+
+## Install
+
+```bash
+./build-widget install     # build it signed and register the extension
+./build-widget uninstall   # deregister it and remove the app
+```
+
+`install` runs the preflight checks below, regenerates the project, builds
+Debug into `build/` (gitignored), copies the host app to
+`~/Applications/Altero.app` and registers it with `lsregister`. Then
+add the widget from the gallery: right-click the desktop, Edit Widgets, and
+look for **Altero**. Nothing is launched — an extension is registered by being
+on disk in a known app, not by running one.
+
+Earlier builds installed as `~/Applications/AlteroWidgetHost.app` and then
+`~/Applications/altero.app`; `install` and `uninstall` both deregister and
+delete either one if it is still there.
+
+Preflight refuses early, with the fix rather than a stack of xcodebuild noise:
+no usable `xcodebuild`, no `xcodegen`, no `Signing.xcconfig`, an empty
+`DEVELOPMENT_TEAM`, or no matching certificate in the keychain.
+
+`~/Applications` is a choice, not a requirement. pkd registers the extension
+from wherever the app happens to sit — verified from a build directory under
+`/private/tmp`, from `/Applications` and from a dotfile directory in `$HOME`.
+What settles it is that the app has to outlive the build directory, and that
+`~/Applications` needs no admin write.
+
+What does break registration is **two registered copies of one extension
+bundle id**: pkd keeps whichever LaunchServices saw last and the other
+disappears from `pluginkit` entirely. `xcodebuild` registers every app it
+builds, so `install` unregisters its own build-directory copy before
+registering the installed one. A build from Xcode.app steals it back; re-run
+`./build-widget install`, or unregister that copy by hand:
+
+```bash
+/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/\
+LaunchServices.framework/Versions/A/Support/lsregister -u <the other .app>
+```
+
+What is registered right now:
+
+```bash
+pluginkit -m -v -i com.fullcontextlabs.altero.widget
+```
+
+chronod caches a widget's descriptor — the gallery's display name included —
+keyed on the extension bundle id and the widget `kind`, in a store under
+`~/Library/Group Containers` that is TCC-protected, so no script can clear it.
+Changing the widget's name therefore takes a new identity (bundle id
+`com.fullcontextlabs.altero.widget` and `kind` `AlteroWidget` today). Placed
+widgets do not survive an identity change — the old ones vanish from the
+desktop and have to be added again.
+
+## Signing: the one step
+
+Set your 10-character Team ID in `Signing.xcconfig` (gitignored, so it is
+per-developer):
+
+```
+DEVELOPMENT_TEAM = ABCDE12345
+```
+
+Find it at <https://developer.apple.com/account> under Membership details.
+Without it the build fails with:
+
+```
+error: "AlteroWidgetHost" has entitlements that require signing with a
+development certificate.
+```
+
+That failure is signing only — the project configuration itself is fine, which
+you can confirm with `xcodebuild ... CODE_SIGNING_ALLOWED=NO build`.
+
+## Entitlements
+
+The extension is sandboxed; the host app is not (see "Start backend" for why).
+The extension additionally carries two exceptions:
+
+```xml
+<key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>
+<array><string>/.altero/snapshot.json</string></array>
+<key>com.apple.security.temporary-exception.files.home-relative-path.read-write</key>
+<array><string>/.altero/widget-requests/</string></array>
+```
+
+The read-write one is the request drop directory (auto-switch toggle, switch
+requests, and reading the host's start marker) and nothing else; see below.
+
+No App Group. The snapshot is written by the user's own `altero`, installed from
+PyPI — a python3 process, with no code signature and so no entitlement, which
+`containermanagerd` denies on a group container. The container works fine for a
+signed *reader*; it is the writer that cannot get in. So the contract is an
+ordinary absolute path plus the narrowest sandbox exception that opens it.
+
+The exception has no trailing slash, so it grants exactly that one file: a
+sandboxed reader with it reads `snapshot.json` and gets `EPERM` on
+`settings.json` sitting next to it. Nothing else in the backup root —
+`credentials/`, `configs/` — is reachable.
+
+Turning the extension's sandbox off instead is not an option. `pkd` refuses to
+register an unsandboxed extension at all:
+
+```
+pkd: [com.apple.PlugInKit:discovery] rejecting; Ignoring mis-configured
+plugin at [.../AlteroWidgetExtension.appex]: plug-ins must be sandboxed
+```
+
+`Widget/SnapshotFile.url` / `.requestsDirectory` and these entitlements are the
+same decisions written twice. They move together or the extension gets `EPERM`.
+
+## Auto-switch toggle
+
+Large and extra-large put a `Toggle(isOn:intent:)` labeled "Auto-switch" on the
+auto-switch line, bound to the snapshot's `autoswitch.enabled`. It is drawn by
+a custom `ToggleStyle` -- a capsule holding the label, a filled state dot
+(green on, red off) and the state in words (`at 85%` / `Off`). Not
+`.toggleStyle(.switch)`: AppKit's switch is not one of the controls a widget's
+out-of-process renderer can draw, and came out as the yellow "unsupported
+view" placeholder.
+
+Dot and words come from one value, so they can never disagree: the `Toggle`'s
+own binding, which is the resolved state (`ToggleResolution`) until a tap and
+WidgetKit's optimistic flip for the second after it. An earlier version bound
+only the dot to it and left the words on the resolved state, which showed a
+green dot beside a label still reading "Off"; the answer is to feed both from
+the same side, not to throw the optimistic flip away. It is the only feedback
+there is in the gap between the tap and the reload that confirms it, and
+without it the chip needed two clicks to look like it had done anything (see
+"Why a tap must not wait"). With the snapshot stale the chip is drawn inert
+and tapping it writes nothing -- the header's "Start backend" is the action
+that matters then.
+
+Tapping it runs
+`SetAutoswitchIntent` in the extension, which writes
+`~/.altero/widget-requests/autoswitch-<epochMillis>.json`
+(as `.autoswitch-<epochMillis>.tmp`, then renamed; mode 0600):
+
+```json
+{"at": "2026-09-22T05:20:03Z", "autoswitch": {"enabled": false}}
+```
+
+The backend creates the directory (0700), applies the newest request to
+`settings.json` and republishes the snapshot. The widget never creates the
+directory: if it is missing or the write fails, the toggle does not flip and
+the line says "backend not running" (while the snapshot is still fresh; once
+it is stale the header says "Backend stopped" instead). After a successful write the widget keeps
+`{desired, at}` in its own defaults and draws the asked-for state marked
+"applying…" until the snapshot agrees, or for 30s, after which the snapshot's
+value wins again. Logic: `Shared/AutoswitchToggle.swift`.
+
+## Switch to this account
+
+The shown account -- the extra-large right column, the large detail view, the
+medium right column, small's page -- carries a "Switch to this account"
+chip (`Switch` where narrow), beside "‹ Back" on large. Small and medium draw
+it at the small type scale (`compact`), which is what lets the full wording fit
+medium's 147pt. The active account shows "Active" instead, and an account whose
+slot holds no stored backup (`switchable: false`) shows "Not switchable"
+(`No login` in small's 62pt). A disabled slot shows "Disabled": `altero switch
+N` would take it, but the backend refuses a *widget* switch to a disabled slot
+(`apply_switch_request`, "a tap on a dimmed row is far likelier a slip"), so
+offering it here could only ever end in "Switch not applied". `kind` is not
+checked -- an API-key slot with a backup switches like any other. The intent
+re-checks the same rule before it writes, since a tap can land on a rendering
+drawn before the slot changed.
+
+Tapping it runs `SwitchAccountIntent` in the extension, which writes
+`~/.altero/widget-requests/switch-<epochMillis>.json` (via
+`.switch-<epochMillis>.tmp`, mode 0600):
+
+```json
+{"at": "2026-09-22T05:20:03Z", "switch": {"to": 3}}
+```
+
+The backend applies a request under 60s old through the same path as
+`altero switch 3` and republishes the snapshot. The widget keeps
+`{target, at, delivered}` in its own defaults and shows "Switching…" until the
+snapshot's `activeAccountNumber` is the target, or for 30s; then "Switch not
+applied" with a Retry chip for 30s more. With the snapshot stale the intent
+does not write at all -- and the chip is not drawn: "Start backend" takes its
+place. On small and medium it takes the place of "Active" and "Not switchable"
+too, because that one spot is the only place either size can offer a start;
+large and extra-large keep their own state there, since their header already
+carries the chip. Logic: `Shared/AccountSwitch.swift`.
+
+## Why a tap must not wait
+
+Neither intent waits for the backend. Both used to: after writing the request
+they polled the snapshot for up to 2s, so the reload that followed would draw
+the confirmed state rather than the pending one. That is what made the
+auto-switch chip "need two clicks".
+
+chronod pauses a widget's reloads for as long as an intent's `perform` runs,
+and only once it returns does it re-render — every size the widget is placed
+in, one after another. NotificationCenter swaps the drawing in when the whole
+batch is done. Measured on a tap that was applied in a second
+(`log show --predicate 'subsystem BEGINSWITH "com.apple.chrono"'`):
+
+```
+09:05:52.124  tap                     Handle action: SetAutoswitchIntent
+09:05:52.125  reloads paused          Reload state reload -> paused
+09:05:53.182  perform returned        1.06s, all of it the poll
+09:05:53.248  reload: begin
+09:05:53.364  small archived          ... medium 53.608, large 53.878,
+09:05:54.314  extra-large archived        four sizes, ~1.1s
+09:05:54.328  desktop finally redrew  2.2s after the tap
+```
+
+The user's second tap came at 09:05:54.320 — eight milliseconds before the
+first one showed. And because the intent it carried was archived in the
+pre-tap rendering, it asked for the same value again, so the pattern in the
+backend's log was `off, off, on, on`: every second tap a no-op. A
+`SelectAccountIntent`, whose `perform` is 8ms, redrew in ~600ms and never had
+the problem — which is why only this chip was reported.
+
+So: write the request, remember it, return. The pending state
+(`ToggleResolution.isPending`, `SwitchState.switching`) exists precisely so
+nothing has to be waited for — the chip draws what was asked for, marked
+pending, until the snapshot agrees or the request times out. `Toggle`'s
+optimistic flip covers the render batch on top of that, so the chip answers
+the tap in the same frame.
+
+## Start backend
+
+When the snapshot is more than 3 minutes old the header reads "Backend
+stopped" (shortened to an icon where tight) followed by a "Start backend"
+chip (`Start` where tight) -- a filled play glyph and the words. Small and
+medium have no header, so the chip appears where the switch control would be:
+`▶ Start backend` fits medium's 147pt column whole, and small's 62pt beside
+the pager takes `▶ Start`. A widget gets no hover, and `.help()` does not
+survive the out-of-process renderer, so the tooltip is an
+`accessibilityLabel` of "Start backend" on every form.
+
+A widget cannot run a process, and an `AppIntent` in a widget runs in the
+sandboxed extension, which cannot exec `altero`. So the chip is a `Link` to
+`altero://start-backend`, a scheme the host app registers in
+`CFBundleURLTypes`. A `Link` is the documented way for a macOS 14+ widget to
+hand a tap to its app. An intent with `openAppWhenRun` would need the intent
+compiled into the host and runs its `perform` in whichever process the system
+picks; `OpenURLIntent` is macOS 15+. It is the only `Link` in the widget --
+the stray-tap catcher behind everything is still a `RefreshIntent` button, so
+a tap that misses every control still does not open the app.
+
+The host app (`App/HostMain.swift`) is `LSUIElement` and never shows a Dock
+icon, a window or a menu on any path. On the start URL it:
+
+1. drops `widget-requests/.backend-starting` (`{"at": ...}`; a dotfile, which
+   the backend leaves alone), creating the directory 0700 if it is missing,
+   and reloads the widget, which then shows "Starting…" while the marker is
+   under 30s old and the snapshot still stale;
+2. finds altero: the snapshot's `alteroCommand` argv prefix, else the first
+   executable of `~/.local/bin/altero`, `/opt/homebrew/bin/altero`,
+   `/usr/local/bin/altero`;
+3. runs `<altero> service start` (20s timeout; PATH extended with those
+   directories, since a LaunchServices launch gets launchd's bare PATH);
+4. on success waits up to 5s for a snapshot newer than the click, reloads the
+   widget and quits; on failure writes `widget-requests/.backend-start-failed`
+   (`{"at": ..., "reason": ...}`) and quits. Either way it removes
+   `.backend-starting` first, so a finished start never leaves the widget on
+   "Starting…".
+
+**Nothing is ever drawn, on this path or any other.** The tap came
+from a widget, so the answer belongs in the widget: while the snapshot is
+still stale the Start control reads the failure marker and becomes
+"Start failed · Retry" (`Failed · Retry`, and on small's 62pt a single Retry
+chip with a warning glyph), with the reason in its `accessibilityLabel`. It
+clears on a fresh snapshot, on the next attempt, or after 3 minutes. Large and
+extra-large drop the "Backend stopped" wording while it shows, since the
+control already says it.
+
+There used to be an info window for a plain launch, saying the app was only a
+container. It is gone. A stray tap on a widget region that carries no control
+is delivered by WidgetKit as a plain launch of the container app with no URL
+(`Launching with no widgetURL` in NotificationCenter's log), so any window on
+that path is a popup a widget tap can summon -- which it did, from large, even
+with the `RefreshIntent` catcher in place. Nothing that only exists to say "I
+am a stub" is worth that, and a catcher can only ever be a patch: the launch
+path stays open however good the coverage is.
+
+What a launch does now:
+
+| launched by | what happens |
+| --- | --- |
+| `--placed-widgets` | prints the count, exits; no `NSApplication` at all |
+| `altero://start-backend` | runs altero, writes its markers, quits |
+| any other URL | one log line, quits |
+| a stray widget tap, Finder, `open -a` | one log line, quits after 1s |
+
+That last second is the URL grace: `launchIsDefaultUserInfoKey` is missing on
+a cold URL launch (which reads as "plain") and the URL event can arrive after
+`applicationDidFinishLaunching`, so quitting at that moment would kill a Start
+tap before its URL was delivered. Double-clicking `Altero.app` in Finder
+therefore does nothing visible and leaves nothing running.
+
+The host has no window to report in, so it logs: a line per launch and per
+start to `widget-requests/.host.log` (trimmed to the last 200 lines past 64KB)
+and to `os_log` under subsystem `com.fullcontextlabs.altero`:
+
+```bash
+tail -f ~/.altero/widget-requests/.host.log
+log stream --predicate 'subsystem == "com.fullcontextlabs.altero"'
+```
+
+Note that `altero service start` is a no-op when the backend is already running
+this build: it exits 0, which is a success here.
+
+What the host will exec is checked first. The snapshot is the user's own 0600
+file, so a doctored `alteroCommand` already needs code running as them; what it
+would buy is the host's identity, since an unsandboxed notarized app's child
+inherits its TCC and responsible-process standing and the user starts it by
+tapping a legitimate control. So only the two shapes `resolve_program()` ever
+writes are accepted -- an absolute path whose basename is `altero`, or an
+interpreter with argv exactly `["-m", "altero"]` -- and only when the file
+is not group- or world-writable. Anything else falls back to the known install
+paths, or fails as "altero was not found".
+
+The host is unsandboxed for this. A sandboxed parent cannot read the snapshot
+without an exception, and whatever it execs inherits its sandbox, so `altero`
+could reach neither `~/.altero` nor `launchctl`. pkd's sandbox
+requirement applies to plug-ins only; the host of a Developer ID app outside
+the App Store does not need one, and hardened runtime stays on.
+
+## Placed-widget query
+
+```bash
+~/Applications/Altero.app/Contents/MacOS/Altero --placed-widgets
+{"count": 4}
+```
+
+One JSON line with the number of placed Altero widgets
+(`WidgetCenter.getCurrentConfigurations`), exit 0; on failure a message on
+stderr and exit 1 (including a 10s timeout). The argument is handled in
+`App/HostMain.swift` before any `NSApplication` exists, so no window opens and
+no Dock icon appears. The backend uses it to treat a placed widget as an open
+surface. Each placed widget counts once, whatever its size.
+
+Right after chronod restarts (every `./build-widget install` runs
+`killall chronod`) it answers `{"count": 0}` for a few seconds. So the backend
+never retires on one 0: zero answers (and errors, and a missing app) must hold
+across consecutive checks at least 15s apart. A positive count is cached for
+five minutes; a 0 is never cached.
+
+## Distribution
+
+The widget ships as a notarized `.dmg` signed with a Developer ID Application
+certificate; hardened runtime is on (`ENABLE_HARDENED_RUNTIME: YES`) because
+notarization requires it. Users install that — they are not expected to build
+from source, and they keep using whatever `altero` they already have from PyPI.
+
+```bash
+xcrun notarytool store-credentials altero-notary \
+    --apple-id you@example.com --team-id ABCDE12345 \
+    --password <app-specific password>            # once
+./build-widget release
+```
+
+`release` archives, exports with `method: developer-id`, builds the DMG, signs
+it, notarizes, staples, and prints the path. `ExportOptions.plist` is generated
+into `build/` rather than committed, because it carries the Team ID. Set
+`NOTARY_PROFILE` if the keychain profile is named something other than
+`altero-notary`.
+
+The export is not interchangeable with a plain `xcodebuild build`: that injects
+`com.apple.security.get-task-allow`, which notarization rejects outright. So
+`release` proves the exported extension is clean before spending a submission
+on it, and stops if it is not:
+
+```bash
+codesign -d --entitlements - --xml \
+  build/export/Altero.app/Contents/PlugIns/AlteroWidgetExtension.appex \
+  | plutil -p -
+```
+
+**`release` is untested.** There is no Developer ID Application certificate on
+this machine, so it has only ever been run as far as its certificate check.
+Archive, export, DMG, notarization and stapling are written but unrun.
+
+## Layout
+
+```
+project.yml                              XcodeGen spec — the real project definition
+build-widget                             install / uninstall / release
+Signing.xcconfig.example                 template for the gitignored Team ID file
+App/HostMain.swift                       entry point; `--placed-widgets`; altero://start-backend; no UI
+App/AlteroWidgetHost.entitlements         no sandbox (see "Start backend")
+Shared/Snapshot.swift                    schema-v1 decoding (shared with the tests)
+Shared/Display.swift                     pure display logic: ramp, severity, formatting, small's paging
+Shared/Trend.swift                       24h trend: samples in range, time axis, switch markers
+Shared/Navigation.swift                  selection state: select, neighbor, back, scroll, resolve
+Shared/AutoswitchToggle.swift            toggle request file + pending-state resolution
+Shared/AccountSwitch.swift               switch request file, eligibility, pending-state resolution
+Shared/CompactAction.swift               what small's and medium's one action spot carries
+Shared/BackendStart.swift                start URL, start/failure markers, "Starting…", finding altero
+Shared/RequestDrop.swift                 atomic dot-temp + rename writes into the drop directory
+Widget/AlteroWidgetBundle.swift           @main WidgetBundle
+Widget/AlteroWidget.swift                 provider, Appearance override, widget definition
+Widget/Intents.swift                     Appearance config intent, ‹ › page, select, details,
+                                         back, scroll, refresh and auto-switch intents,
+                                         page/nav/toggle stores
+Widget/Components.swift                  ring, bar, badges, window row, pager
+Widget/Pages.swift                       the widget view, page context, hero parts, small's page
+Widget/MediumPage.swift                  medium: the left column's picture, the right column, ‹ ›
+Widget/LargePages.swift                  large: list/detail routing, the list, the trend panel
+Widget/AutoStatusLine.swift              the auto-switch chip, its state line and its compact form
+Widget/ActionControls.swift              the compact action spot: Switch, Start backend
+Widget/ExtraLargePage.swift              extra-large master-detail: rows, pace, model usage
+Widget/DetailPages.swift                 the facts grid, and large's drill-down detail view
+Widget/SnapshotFile.swift                the only place the snapshot and request paths are decided
+Widget/AlteroWidgetExtension.entitlements sandbox + snapshot read + request-drop write exceptions
+Tests/SnapshotGoldenTests.swift          decodes ../tests/fixtures/snapshot_golden.json
+Tests/AutoswitchFixtureTests.swift       decodes Tests/Fixtures/snapshot_autoswitch.json
+Tests/DisplayTests.swift                 Shared/Display.swift
+Tests/AutoswitchToggleTests.swift        Shared/AutoswitchToggle.swift
+Tests/AccountSwitchTests.swift           Shared/AccountSwitch.swift
+Tests/CompactActionTests.swift           Shared/CompactAction.swift
+Tests/BackendStartTests.swift            Shared/BackendStart.swift
+```
+
+`AlteroWidget.xcodeproj`, `Signing.xcconfig`, `build/` and both generated
+`Info.plist` files are gitignored.
+
+## Where the snapshot is read from
+
+```bash
+altero snapshot --out ~/.altero/snapshot.json
+```
+
+`~/.altero/` is the directory altero owns — `settings.json`,
+`menubar_settings.json`, `sequence.json`, `configs/`, `credentials/` all live
+there. `~/.claude/` is Claude Code's: it prunes that directory itself and
+relocates it when `CLAUDE_CONFIG_DIR` is set, neither of which a widget looking
+by absolute path can survive.
+
+`write_snapshot` publishes the file 0600 by atomic rename, so a polling reader
+never sees it half-written.
+
+## Status
+
+All four sizes (small, medium, large, extra-large), a per-widget Appearance
+setting (System/Light/Dark, from Edit Widget), and an auto-switch
+toggle on every size -- a line of its own on large and extra-large, a chip in
+the one action spot on small and medium -- and "Switch to this account"
+wherever an account is shown. When the snapshot is more than 3 minutes old the
+header says "Backend stopped · updated 13m ago" instead of the time, with a
+"Start backend" chip (both shortened where tight). Small is the one size that
+still pages with ‹ ›, and its pages are the accounts: one per login, nothing
+else.
+
+Small is that one account at 164×164: the initials badge and name with a green
+dot when it is the account in use, the 5h ring with its ticking countdown, the
+weekly bar with its percent and `3d 11h`, and a bottom line holding the pager
+and one action spot -- 62pt of it, beside a 72pt pager. What goes in that spot
+is `CompactSlot.resolve`: the auto-switch toggle on the active account's page
+(`⟳ ● 85%` / `⟳ ● Off`, the same `Toggle(isOn:intent:)` large and extra-large
+carry, with ⏳ or ! in place of the glyph while a request is out or was never
+delivered), the switch control on any other (`⇄ Switch`, `Switching…`,
+`↻ Retry`, `No login`, `Disabled`), and `▶ Start` over both of them when the
+backend has stopped -- nothing else there would be applied. The dot beside the
+name is what says "active", so the word is not spent on the one line that can
+hold a control. With one account the ‹ › are dimmed: they still wrap, they
+just have nowhere to go.
+
+Medium, large and extra-large all keep a selection in one `NavState`
+(mode, selection, list offset) per size; only large has a detail mode.
+
+Medium is master-detail for one account at a time, at 344×164, split into a
+picture and an account. The 150pt left column is the picture: the 5h ring at
+64pt with its ticking countdown, the weekly bar with its percent and `3d 11h`,
+and under them a 34pt sparkline of that account's 5h history over the trend's
+own time axis, with the threshold as a dashed rule. When the backend has
+stopped, the control that starts it takes the sparkline's place -- the left
+column is where medium offers the start, which is what frees its right column
+to stay about the account.
+
+The 147pt right column carries the identity, once: the badge, the email across
+the line (10.5pt, scaling to 0.7 before it truncates at the tail) and the green
+dot when it is the account in use, then the facts grid in its compact form --
+org, alias, `kind`/`updated` sharing a row, status -- at 10pt. Its bottom line
+is laid out as small's is: the same action spot on the left (77pt here) and
+‹ 2/6 › on the right. Medium differs from small in one way, and only when the
+backend has stopped: its left column is already offering the start, so the spot
+keeps the auto chip, drawn inert. "BY MODEL" is what does not fit and is the one
+thing extra-large's right column has that medium's does not; the pace strip is
+the other.
+
+The ‹ › move the **selection**, not a page: they run the same
+`SelectAccountIntent` a row tap runs on the larger sizes, on the account
+`Navigation.neighbor` returns, wrapping at both ends. So medium has no detail
+page and no `PageStore` entry at all -- selection is its whole navigation.
+The read-only auto badge that shared medium's top line with the ‹ › is gone:
+the arrows moved to the bottom right and the email took that line, and the
+action spot below now carries the toggle itself. Auto-switch is shown once per
+size, and on medium it is shown where it can be pressed.
+
+Large and extra-large are master-detail with no pager. The account list is the
+same on both: three rows per window at 344pt, each a three-line button that selects it
+(default: the active account) -- the name, alias and email both, on a line of
+its own, then a `5H` and a `7D` line, each with its bar, percent and countdown
+(the 5h one ticking, the weekly one as `3d 11h`). When the list overflows,
+▲/▼ move it a window at a time -- widgets cannot scroll.
+
+What differs is where the selection is shown. Extra-large has the room for a
+right column beside the list: the account's details, the weekly figures the
+rows do not carry (pace against expectation, when the week runs out, spend),
+the per-model weekly limits -- the one place Opus/Sonnet/Haiku/Fable appear --
+and the 5h trend with its line emphasized.
+
+Large stacks the same thing behind a drill-down. Selecting stays a row tap;
+the selected row then grows a "Details ›" button, a second tap that swaps
+the list for the detail view -- "‹ Back" and the switch control on one line,
+then the account, the facts grid, the per-model rows and a compact 5h trend
+(46pt of chart, one axis hint each side, no legend). "Details ›" is an
+overlay on the row rather than a button nested in one, which has no defined
+winner, and it sits on the name line, where a name can give up width, rather
+than beside the bars, which cannot. Two things are left out to fit at
+344×344: the pace strip, and the 5h/7d bars -- the list row the tap came from
+carries those.
+
+On every size, a tap that misses every control reloads the widget
+(`RefreshIntent`) rather than launching the stub host app. The catcher sits
+behind the whole widget rect -- content margins are disabled, so that includes
+the padding ring -- because there is no `widgetURL` and WidgetKit's default
+for an uncaught tap is to open the container app. It catches nearly all of
+them, but not every one: a tap that lands while NotificationCenter is between
+archives finds no interaction region at all and falls through to that default
+(`Launching with no widgetURL`), which is what the host app having no window
+is for. The one `Link`, "Start backend", opens the host on purpose.
+
+The trend's time axis spans the history actually held: from the oldest sample
+or auto-switch (at most 24h back) to now, never narrower than an hour, with
+the caption and axis hints following it (`last 40m`, `last 6h`, `last 24h`).
+Switches older than 24h are not drawn.
+
+Large and extra-large use a legible type scale (the `largeType` environment
+flag): nothing under 11pt, percents and countdowns 13-14pt in the primary
+color, `.secondary` only for field labels and subtitles. Under System
+appearance the container background is the window background at 88% opacity:
+a lighter fill let Liquid Glass wash the text out on a light desktop.
+
+The `autoswitch` block and 5h `history` are additive and optional: without them
+the threshold defaults to 90%, next-up is omitted and the extra-large trend
+panel says so. `Tests/Fixtures/snapshot_autoswitch.json` is a hand-written
+fixture for those fields until the Python producer emits them and the golden
+fixture can cover them.
+
+Page and navigation state live in the extension's own defaults, keyed by size:
+WidgetKit gives no identifier for a placed widget, so two widgets of the same
+size page, select and scroll together.
+
+Tests:
+
+```bash
+xcodebuild -scheme AlteroWidgetTests -destination 'platform=macOS' \
+  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO test
+```
+
+`Tests/SnapshotGoldenTests.swift` decodes `tests/fixtures/snapshot_golden.json`
+— the same committed file `tests/test_snapshot_json.py` asserts the Python
+producer against. It is bundled as a test resource from its repo path, never
+copied. The two halves move together or the widget silently fails to decode a
+shipped snapshot.

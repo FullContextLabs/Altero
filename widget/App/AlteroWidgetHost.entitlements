@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- No app sandbox. The host's one job besides containing the extension
+	     is altero://start-backend: read ~/.altero/snapshot.json
+	     for alteroCommand and exec `altero service start`. A sandboxed parent
+	     cannot read the snapshot without an exception, and whatever it execs
+	     inherits its sandbox -- altero could then reach neither its own files
+	     under ~/.altero nor launchctl.
+
+	     The sandbox requirement is pkd's, and it applies to plug-ins only
+	     ("plug-ins must be sandboxed"): the extension keeps its sandbox. A
+	     Developer ID app outside the App Store need not be sandboxed;
+	     hardened runtime (required for notarization) stays on. -->
+</dict>
+</plist>

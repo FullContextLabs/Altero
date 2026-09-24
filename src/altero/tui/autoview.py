@@ -1,0 +1,454 @@
+"""Live auto-switch screen: the real engine, visualized.
+
+Runs :class:`AutoSwitchEngine` in a thread worker and renders its typed
+events. Opens in **dry-run** — opening a view must never start switching
+accounts on its own; going live is an explicit, confirmed action. The
+engine's own state file semantics (shared cooldown, quarantine list, state
+lock) make it safe to run alongside an external ``altero auto``.
+
+When the backend owns the engine (always, on macOS, once the TUI has started
+it) this screen hosts none: it tails the backend's events, and its live/dry
+toggle is ``autoswitch.enabled``, confirmed the same way.
+
+The active account's full card sits on top (same widget as the dashboard's
+panel, with the threshold tick); this screen adds the engine badge, the
+ranked switch candidates, and the decision log. While it is up, the app's
+snapshot poller runs store-only: the engine is the only fetcher.
+"""
+
+from __future__ import annotations
+
+from dataclasses import replace
+from typing import TYPE_CHECKING
+
+from rich.text import Text
+from textual.app import ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
+from textual.screen import Screen
+from textual.widgets import Footer, RichLog, Static
+
+from altero import launch_agent
+from altero.autoswitch import (
+    AutoSwitchEngine,
+    AutoSwitchEvent,
+    BackendEventLog,
+    binding_pct,
+    pct_label,
+)
+from altero.models import AccountsSnapshot
+from altero.settings import (
+    SETTING_SPECS,
+    AutoSwitchSettings,
+    load_settings,
+    parse_model_names,
+    set_setting,
+)
+from altero.tui import data
+from altero.tui.modals import ConfirmModal
+from altero.tui.theme import Palette
+from altero.tui.widgets import AccountsPanel
+
+if TYPE_CHECKING:
+    from altero.tui.app import AlteroApp
+
+_EVENT_ROLES = {
+    "switch": "accent",
+    "error": "sev_warn",
+    "account-quarantined": "sev_warn",
+    "all-exhausted": "sev_crit",
+}
+_QUIET_KINDS = {"poll", "no-switch", "sleep", "account-unquarantined"}
+
+
+def event_text(event: AutoSwitchEvent, *, palette: Palette = Palette.DARK) -> Text:
+    """Log line for one engine event, styled like the CLI's human renderer."""
+    role = _EVENT_ROLES.get(event.kind)
+    if role is not None:
+        style = getattr(palette, role)
+    else:
+        style = palette.muted if event.kind in _QUIET_KINDS else palette.foreground
+    text = Text()
+    text.append(f"{data.clock_stamp()}  ", style=palette.muted)
+    text.append(event.human(), style=style)
+    return text
+
+
+class AutoScreen(Screen):
+    BINDINGS = [
+        Binding("l", "toggle_live", "Go live / dry-run"),
+        Binding("t", "adjust_threshold", "Threshold"),
+        Binding("left", "threshold_step(-1)", "-1%"),
+        Binding("right", "threshold_step(1)", "+1%"),
+        Binding("enter", "adjust_done", "Done"),
+        Binding("escape,q", "back", "Back"),
+    ]
+
+    app: "AlteroApp"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._engine: AutoSwitchEngine | None = None
+        self._settings = None
+        # Session-only threshold adjustment (t, then arrows). Never written
+        # to settings.json — same memory-only precedent as the dry-run
+        # toggle. ``_configured_threshold`` is the mount-time file value the
+        # screen reverts to on exit; ``_entry_threshold`` is the value when
+        # adjust mode was entered (wake/log only on a net change).
+        self._adjusting = False
+        # Who owns the engine, decided at mount from the engine LOCK, not
+        # from the launchd label: this screen hosts one only when nothing
+        # else does, and the badge must not claim a mode it isn't in.
+        self._owner = launch_agent.ENGINE_NONE
+        # Set when the backend owns the engine: its events arrive by tailing
+        # its log instead of through an in-process callback.
+        self._backend_log: BackendEventLog | None = None
+        self._configured_threshold: float | None = None
+        self._entry_threshold: float | None = None
+
+    def compose(self) -> ComposeResult:
+        yield AccountsPanel(show_minis=False, id="auto-active-panel")
+        with Vertical(id="auto-top"):
+            with Horizontal(id="auto-title-row"):
+                yield Static(" DRY-RUN ", id="mode-badge", classes="dry")
+                yield Static("", id="auto-summary")
+            yield Static("", id="candidates")
+        yield RichLog(id="event-log", highlight=False, markup=False, wrap=True)
+        yield Footer()
+
+    # -- lifecycle ----------------------------------------------------------
+
+    def on_mount(self) -> None:
+        self.app.set_store_only(True)
+        self._settings = load_settings(self.app.switcher.backup_dir)
+        # The bar tick everywhere reads app.threshold_pct, loaded once at app
+        # startup — sync it to the fresh file value so bars and engine agree,
+        # and remember that value: unmount restores it (only the session
+        # adjustment reverts, not this correction).
+        self._configured_threshold = self._settings.threshold
+        self.app.threshold_pct = self._settings.threshold
+        self._update_summary()
+        self.watch(self.app, "snapshot", self._on_snapshot)
+        self.watch(self.app, "theme", self._on_theme_change)
+        # Whoever already holds the engine lock owns auto-switching: a second
+        # engine here would poll and decide independently against the same
+        # accounts. So the screen either hosts one or becomes a window onto
+        # the one that exists — and says which, rather than guessing from the
+        # launchd label (which misses a hand-run `altero auto` entirely).
+        self._owner, detail = launch_agent.engine_owner(self.app.switcher.backup_dir)
+        if self._owner == launch_agent.ENGINE_NONE and self.app.backend_managed:
+            # The backend was just started and has not taken the lock yet.
+            # Hosting an engine here would win that race and leave launchd
+            # restarting a backend that can never tick.
+            self._owner = launch_agent.ENGINE_BACKEND
+        if self._owner == launch_agent.ENGINE_BACKEND:
+            self._note(
+                "— the Altero backend service owns auto-switching; "
+                "showing its event stream —"
+            )
+            self._backend_log = BackendEventLog(
+                launch_agent.log_paths(launch_agent.AUTO_LABEL)[0]
+            )
+            self.set_interval(1.0, self._poll_backend_log)
+            self._poll_backend_log()
+            self._update_badge()
+            return
+        if self._owner == launch_agent.ENGINE_OTHER:
+            # No log path is known for a hand-run engine, so this screen can
+            # show its accounts but not its decisions. Saying so beats a badge
+            # that implies this screen is the one deciding.
+            self._note(
+                f"— another process already owns auto-switching ({detail}); "
+                "this screen is showing its accounts, not running an engine "
+                "of its own, and its event stream is not ours to read —"
+            )
+            self._update_badge()
+            return
+        if self.app.backend_error:
+            self._note(f"— backend not started ({self.app.backend_error}) —")
+        self._start_engine(dry_run=True)
+
+    def on_unmount(self) -> None:
+        if self._engine is not None:
+            self._engine.stop()
+        # A session threshold must not outlive the engine it steered: unpin
+        # the poll planner and put the bar tick back on the file value.
+        self.app.switcher.clear_poll_policy_inputs()
+        if self._configured_threshold is not None:
+            self.app.threshold_pct = self._configured_threshold
+        self.app.set_store_only(False)
+
+    def _note(self, message: str) -> None:
+        """A muted line about the screen itself, not about an engine event."""
+        self.query_one("#event-log", RichLog).write(
+            Text(message, style=Palette.from_theme(self.app.current_theme).muted)
+        )
+
+    def _poll_backend_log(self) -> None:
+        """Render whatever the backend has appended since the last tick."""
+        if self._backend_log is None:
+            return
+        for event in self._backend_log.poll():
+            self._on_engine_event(event)
+
+    def _on_theme_change(self, _theme: str) -> None:
+        self._update_summary()
+        self._update_badge()
+        snap = self.app.snapshot
+        if snap is not None:
+            self._on_snapshot(snap)
+
+    def action_back(self) -> None:
+        if self._adjusting:
+            self._end_adjust()
+            return
+        self.app.pop_screen()
+
+    # -- threshold adjust mode ------------------------------------------------
+
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        if action in ("threshold_step", "adjust_done") and not self._adjusting:
+            return False  # hidden and inert until adjust mode is armed
+        return True
+
+    def action_adjust_threshold(self) -> None:
+        if self._adjusting:
+            self._end_adjust()
+            return
+        self._adjusting = True
+        self._entry_threshold = self._settings.threshold
+        self._update_summary()
+        self.refresh_bindings()
+
+    def action_adjust_done(self) -> None:
+        if self._adjusting:
+            self._end_adjust()
+
+    def action_threshold_step(self, delta: float) -> None:
+        if not self._adjusting:
+            return
+        spec = SETTING_SPECS["autoswitch.threshold"]
+        value = min(spec.hi, max(spec.lo, self._settings.threshold + delta))
+        self._set_threshold(value)
+
+    def _end_adjust(self) -> None:
+        self._adjusting = False
+        self._update_summary()
+        self.refresh_bindings()
+        if self._settings.threshold == self._entry_threshold:
+            return  # no net change: nothing to announce, no tick to force
+        if self._engine is not None:
+            self._engine.wake()  # show a decision at the new value now
+        self.query_one("#event-log", RichLog).write(
+            Text(
+                f"— threshold set to {pct_label(self._settings.threshold)}% "
+                "for this session —",
+                style=Palette.from_theme(self.app.current_theme).muted,
+            )
+        )
+
+    def _set_threshold(self, value: float) -> None:
+        if value == self._settings.threshold:
+            return
+        self._settings = replace(self._settings, threshold=value)
+        if self._engine is not None:
+            self._engine.apply_threshold(value)
+        self.app.threshold_pct = value
+        self.query_one("#auto-active-panel", AccountsPanel).refresh()
+        self._update_summary()
+
+    def _update_summary(self) -> None:
+        palette = Palette.from_theme(self.app.current_theme)
+        text = Text()
+        text.append("auto-switch · ")
+        text.append(
+            f"threshold {pct_label(self._settings.threshold)}%",
+            style=palette.accent if self._adjusting else "",
+        )
+        if self._settings.threshold != self._configured_threshold:
+            text.append(" (session)", style=palette.muted)
+        text.append(f" · poll every {self._settings.interval_seconds:.0f}s")
+        if self._adjusting:
+            text.append("   ← → adjust · enter done", style=palette.muted)
+        self.query_one("#auto-summary", Static).update(text)
+
+    # -- engine -------------------------------------------------------------
+
+    def _start_engine(self, *, dry_run: bool) -> None:
+        engine = AutoSwitchEngine(
+            self.app.switcher,
+            self._settings,
+            self._emit_from_thread,
+            dry_run=dry_run,
+        )
+        self._engine = engine
+        self._owner = launch_agent.ENGINE_SELF
+        self.run_worker(
+            engine.run_loop,
+            thread=True,
+            group="engine",
+            exit_on_error=False,
+            name=f"auto-engine-{'dry' if dry_run else 'live'}",
+        )
+        self._update_badge()
+        mode = "DRY-RUN (watching only)" if dry_run else "LIVE (will switch accounts)"
+        self._note(f"— engine started: {mode} —")
+
+    def _emit_from_thread(self, event: AutoSwitchEvent) -> None:
+        """Engine ``on_event`` callback — runs on the worker thread."""
+        try:
+            self.app.call_from_thread(self._on_engine_event, event)
+        except Exception:
+            # App/screen tearing down mid-tick; the event has nowhere to go.
+            pass
+
+    def _on_engine_event(self, event: AutoSwitchEvent) -> None:
+        if not self.is_attached:
+            return
+        palette = Palette.from_theme(self.app.current_theme)
+        self.query_one("#event-log", RichLog).write(event_text(event, palette=palette))
+        if event.kind == "switch":
+            self.app.request_refresh()
+
+    def action_toggle_live(self) -> None:
+        if self._owner == launch_agent.ENGINE_BACKEND:
+            # No engine here to restart: the backend's live/dry switch is
+            # autoswitch.enabled, which it re-reads every tick.
+            if self._backend_enabled():
+                self._set_backend_enabled(False)
+            else:
+                self.app.push_screen(
+                    ConfirmModal(
+                        "Go live? Altero will switch your active account "
+                        "automatically when the threshold is reached.\n\n"
+                        "(Sets autoswitch.enabled, which every surface shares.)",
+                        title="Go live",
+                        yes_label="Go live",
+                    ),
+                    self._on_backend_live_confirm,
+                )
+            return
+        if self._engine is None:
+            return
+        if self._engine.dry_run:
+            self.app.push_screen(
+                ConfirmModal(
+                    "Go live? Altero will switch your active account "
+                    "automatically when the threshold is reached.\n\n"
+                    "(Same behavior as running `altero auto` in a terminal.)",
+                    title="Go live",
+                    yes_label="Go live",
+                ),
+                self._on_live_confirm,
+            )
+        else:
+            self._restart_engine(dry_run=True)
+
+    def _on_live_confirm(self, confirmed: bool | None) -> None:
+        if confirmed:
+            self._restart_engine(dry_run=False)
+
+    def _on_backend_live_confirm(self, confirmed: bool | None) -> None:
+        if confirmed:
+            self._set_backend_enabled(True)
+
+    def _backend_enabled(self) -> bool:
+        try:
+            return load_settings(self.app.switcher.backup_dir).enabled
+        except Exception:
+            return AutoSwitchSettings().enabled  # the default, as the engine would read it
+
+    def _set_backend_enabled(self, enabled: bool) -> None:
+        try:
+            set_setting(
+                self.app.switcher.backup_dir,
+                "autoswitch.enabled",
+                "true" if enabled else "false",
+            )
+        except Exception as e:
+            self._note(f"— couldn't set autoswitch.enabled: {e} —")
+            return
+        self._update_badge()
+        self._note(
+            "— backend: LIVE (will switch accounts) —"
+            if enabled
+            else "— backend: poll-only (never switches) —"
+        )
+
+    def _restart_engine(self, *, dry_run: bool) -> None:
+        if self._engine is not None:
+            self._engine.stop()
+        self._start_engine(dry_run=dry_run)
+
+    def _update_badge(self) -> None:
+        badge = self.query_one("#mode-badge", Static)
+        if self._owner == launch_agent.ENGINE_BACKEND:
+            # Read per render, so a toggle from the menu bar or `altero config`
+            # shows here on the next snapshot (see _on_snapshot).
+            if self._backend_enabled():
+                badge.update(" BACKEND · LIVE ")
+                badge.set_classes("live")
+            else:
+                badge.update(" BACKEND ")
+                badge.set_classes("dry")
+        elif self._owner == launch_agent.ENGINE_OTHER:
+            # Not DRY-RUN: that would claim this screen is watching without
+            # switching, when in fact another process may be switching live.
+            badge.update(" EXTERNAL ")
+            badge.set_classes("dry")
+        elif self._engine is not None and not self._engine.dry_run:
+            badge.update(" LIVE ")
+            badge.set_classes("live")
+        else:
+            badge.update(" DRY-RUN ")
+            badge.set_classes("dry")
+
+    # -- candidates -----------------------------------------------------------
+
+    def _on_snapshot(self, snap: AccountsSnapshot | None) -> None:
+        if snap is None:
+            return
+        if self._owner == launch_agent.ENGINE_BACKEND:
+            self._update_badge()
+        self.query_one("#candidates", Static).update(
+            self._candidates_text(snap, active_number=snap.active_number)
+        )
+
+    def _candidates_text(
+        self, snap: AccountsSnapshot, active_number: str | None
+    ) -> Text:
+        """Switch targets ranked by remaining headroom (best first)."""
+        # Same window set as the engine (autoswitch.model included), so the
+        # displayed ranking can never disagree with the account it picks.
+        palette = Palette.from_theme(self.app.current_theme)
+        models = parse_model_names(self._settings.model) if self._settings else ()
+        ranked: list[tuple[float, str]] = []  # (sort key: pct used, number)
+        lines: dict[str, Text] = {}
+        for acc in snap.accounts:
+            if acc.number == active_number or not acc.switchable:
+                continue
+            pct = binding_pct(acc.usage.last_good, models)
+            entry = Text()
+            entry.append(f"\n  {acc.number:>2}  ", style=palette.foreground)
+            entry.append(acc.email, style=palette.foreground)
+            if acc.usage.sentinel is not None:
+                entry.append(
+                    f"  {data.sentinel_label(acc.usage.sentinel)}", style=palette.muted
+                )
+                ranked.append((998.0, acc.number))
+            elif pct is None:
+                entry.append("  usage unknown", style=palette.muted)
+                ranked.append((999.0, acc.number))
+            else:
+                entry.append(f"  {pct:3.0f}% used", style=palette.severity(pct))
+                ranked.append((pct, acc.number))
+            lines[acc.number] = entry
+
+        text = Text()
+        text.append("Next best", style=palette.muted)
+        if not ranked:
+            text.append("\n  no other switchable accounts", style=palette.muted)
+            return text
+        for _pct, number in sorted(ranked):
+            text.append(lines[number])
+        return text

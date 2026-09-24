@@ -1,0 +1,60 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "altero --list",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "altero.cli",
+            "args": ["--list"],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "altero --switch",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "altero.cli",
+            "args": ["--switch"],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "altero --purge",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "altero.cli",
+            "args": ["--purge"],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "altero (custom args)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "altero.cli",
+            "args": ["${input:cliArgs}"],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "console": "integratedTerminal"
+        }
+    ],
+    "inputs": [
+        {
+            "id": "cliArgs",
+            "type": "promptString",
+            "description": "CLI arguments (e.g., --list, --status, --switch)"
+        }
+    ]
+}
