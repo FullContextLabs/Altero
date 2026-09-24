@@ -2,11 +2,11 @@ import AppKit
 import os
 import WidgetKit
 
-/// Entry point. **This app has no user interface at all** -- no window, no
-/// menu, no alert, no Dock icon (`LSUIElement`). It exists to be the bundle
-/// the widget extension ships inside and to run `altero service start` when
-/// the widget asks. Every launch either answers a question and exits or does
-/// its work and quits; none of them can draw anything.
+/// Entry point. **This app has no user interface of its own** -- no window,
+/// no menu, no Dock icon (`LSUIElement`). It exists to be the bundle the
+/// widget extension ships inside, to run `altero service start` when the
+/// widget asks and, in the distributed app, to open the menu bar. Every
+/// launch either answers a question and exits or does its work and quits.
 ///
 /// That is deliberate, not an omission. A tap on a widget region that carries
 /// no control falls through to LaunchServices as a plain launch of this app,
@@ -22,8 +22,16 @@ import WidgetKit
 ///   `altero service start` and quits. The outcome goes into the markers
 ///   `BackendStart` defines -- the widget draws "Start failed · Retry" from
 ///   them -- and the detail into `.host.log` beside them.
-/// - Anything else (a stray widget tap, Finder, `open -a`, an unknown URL):
-///   a line in `.host.log`, then quit.
+/// - A plain launch (Finder, Spotlight, `open -a`, or a widget tap outside
+///   any control) of the distributed app, which carries its engine in
+///   `Contents/Helpers`: runs the engine's `altero menubar` -- the app's real
+///   UI -- and quits. Opening an app is expected to show it; for Altero the
+///   menu bar is it. The one alert this app can show is here: launched from
+///   the disk image or Downloads, it says to move it to Applications instead,
+///   because services installed from there would point at a path that is gone
+///   by the next login.
+/// - Anything else (a plain launch of a development build without an engine,
+///   an unknown URL): a line in `.host.log`, then quit.
 @main
 enum HostMain {
     static func main() {
@@ -60,11 +68,42 @@ final class HostDelegate: NSObject, NSApplicationDelegate {
         guard plainLaunch else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.urlGrace) { [weak self] in
             guard let self, !self.handledURL, !self.starting else { return }
-            // Nothing asked for anything: a stray widget tap, or someone
-            // opening the app to see what it is. There is no window to show
-            // them, so go away again rather than sit in the process list.
-            HostLog.write("plain launch: nothing to do, quitting")
+            self.plainLaunch()
+        }
+    }
+
+    private func plainLaunch() {
+        guard BackendStarter.engine != nil else {
+            // A development build: the menu bar comes from the user's own
+            // altero, so there is nothing to open. Go away again rather than
+            // sit in the process list.
+            HostLog.write("plain launch: no bundled engine, nothing to do, quitting")
             NSApp.terminate(nil)
+            return
+        }
+        if let problem = BackendStart.relocationProblem(appPath: Bundle.main.bundlePath,
+                                                        home: SnapshotFile.home.path) {
+            HostLog.write("plain launch: refusing to install services, \(problem)")
+            let alert = NSAlert()
+            alert.messageText = "Move Altero to your Applications folder"
+            alert.informativeText = "Altero can't start because \(problem). Drag Altero into "
+                + "Applications, then open it from there."
+            NSApp.activate()
+            alert.runModal()
+            NSApp.terminate(nil)
+            return
+        }
+        starting = true
+        Task.detached {
+            let result = BackendStarter.execute(arguments: ["menubar"])
+            await MainActor.run {
+                if case .failure(let failure) = result {
+                    HostLog.write("menubar failed: \(failure.message)")
+                } else {
+                    HostLog.write("menubar ok")
+                }
+                NSApp.terminate(nil)
+            }
         }
     }
 
@@ -134,13 +173,21 @@ enum HostLog {
     }
 }
 
-/// Runs `altero service start`. Blocking; call off the main thread.
+/// Runs altero: `service start` for the widget, `menubar` for a plain launch.
+/// Blocking; call off the main thread.
 enum BackendStarter {
     struct Failure: Error {
         let message: String
     }
 
     static let timeout: TimeInterval = 20
+
+    /// This app's own engine, when it carries one (the distributed app does,
+    /// a `build-widget install` development build does not).
+    static var engine: String? {
+        let path = BackendStart.bundledEngine(appBundle: Bundle.main.bundleURL)
+        return FileManager.default.isExecutableFile(atPath: path) ? path : nil
+    }
 
     static func run() -> Result<Void, Failure> {
         let fileManager = FileManager.default
@@ -158,7 +205,7 @@ enum BackendStarter {
         try? fileManager.removeItem(at: failureMarker)
         WidgetCenter.shared.reloadAllTimelines()
 
-        let result = execute()
+        let result = execute(arguments: ["service", "start"])
         switch result {
         case .failure(let failure):
             HostLog.write("start failed after \(elapsed(since: startedAt)): \(failure.message)")
@@ -189,11 +236,12 @@ enum BackendStarter {
         String(format: "%.1fs", Date().timeIntervalSince(start))
     }
 
-    private static func execute() -> Result<Void, Failure> {
+    /// Runs `altero <arguments>` and waits for it, up to `timeout`.
+    static func execute(arguments: [String]) -> Result<Void, Failure> {
         let home = SnapshotFile.home.path
         guard let command = BackendStart.alteroCommand(
             snapshot: try? Data(contentsOf: SnapshotFile.url), home: home,
-            isExecutable: FileManager.default.isExecutableFile(atPath:)) else {
+            isExecutable: FileManager.default.isExecutableFile(atPath:), bundled: engine) else {
             let paths = BackendStart.fallbackPaths(home: home).joined(separator: ", ")
             return .failure(Failure(message: "altero was not found. The snapshot names no alteroCommand, and "
                                     + "there is no altero in \(paths)."))
@@ -209,10 +257,12 @@ enum BackendStarter {
         }
         defer { try? output.close() }
 
-        HostLog.write("running \((command + ["service", "start"]).joined(separator: " "))")
+        let invocation = (command + arguments).joined(separator: " ")
+        let shown = (["altero"] + arguments).joined(separator: " ")
+        HostLog.write("running \(invocation)")
         let process = Process()
         process.executableURL = URL(fileURLWithPath: command[0])
-        process.arguments = Array(command.dropFirst()) + ["service", "start"]
+        process.arguments = Array(command.dropFirst()) + arguments
         process.standardOutput = output
         process.standardError = output
         process.standardInput = FileHandle.nullDevice
@@ -232,12 +282,12 @@ enum BackendStarter {
         }
         if done.wait(timeout: .now() + timeout) == .timedOut {
             process.terminate()
-            return .failure(Failure(message: "`altero service start` did not finish within \(Int(timeout))s."))
+            return .failure(Failure(message: "`\(shown)` did not finish within \(Int(timeout))s."))
         }
         guard process.terminationStatus == 0 else {
             let text = (try? String(contentsOf: log, encoding: .utf8)) ?? ""
             let tail = text.split(separator: "\n").suffix(6).joined(separator: "\n")
-            return .failure(Failure(message: "`altero service start` exited with status "
+            return .failure(Failure(message: "`\(shown)` exited with status "
                                     + "\(process.terminationStatus).\(tail.isEmpty ? "" : "\n\n\(tail)")"))
         }
         return .success(())

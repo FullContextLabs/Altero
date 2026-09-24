@@ -169,4 +169,32 @@ final class BackendStartTests: XCTestCase {
                                                  home: "/Users/u", isExecutable: { _ in true }, mode: modes()),
                        ["/Users/u/.local/bin/altero"])
     }
+
+    // MARK: - Altero.app's own engine
+
+    func testTheBundledEngineWins() {
+        let app = URL(fileURLWithPath: "/Applications/Altero.app")
+        let engine = BackendStart.bundledEngine(appBundle: app)
+        XCTAssertEqual(engine, "/Applications/Altero.app/Contents/Helpers/AlteroEngine.app/Contents/MacOS/altero")
+        XCTAssertEqual(BackendStart.alteroCommand(snapshot: snapshot(["/Users/u/.local/bin/altero"]),
+                                                  home: "/Users/u", isExecutable: { _ in true },
+                                                  mode: modes(), bundled: engine),
+                       [engine])
+        // A development build has no engine inside: the old order applies.
+        XCTAssertEqual(BackendStart.alteroCommand(snapshot: snapshot(["/Users/u/.local/bin/altero"]),
+                                                  home: "/Users/u", isExecutable: { $0 != engine },
+                                                  mode: modes(), bundled: engine),
+                       ["/Users/u/.local/bin/altero"])
+    }
+
+    func testRelocatedAppsAreNamed() {
+        let home = "/Users/u"
+        XCTAssertNotNil(BackendStart.relocationProblem(
+            appPath: "/private/var/folders/x/T/AppTranslocation/1234/d/Altero.app", home: home))
+        XCTAssertNotNil(BackendStart.relocationProblem(appPath: "/Volumes/Altero/Altero.app", home: home))
+        XCTAssertNotNil(BackendStart.relocationProblem(appPath: "/Users/u/Downloads/Altero.app", home: home))
+        XCTAssertNil(BackendStart.relocationProblem(appPath: "/Applications/Altero.app", home: home))
+        XCTAssertNil(BackendStart.relocationProblem(appPath: "/Users/u/Applications/Altero.app", home: home))
+        XCTAssertNil(BackendStart.relocationProblem(appPath: "/Users/u/DownloadsArchive/Altero.app", home: home))
+    }
 }

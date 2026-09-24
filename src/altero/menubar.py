@@ -28,7 +28,7 @@ from dataclasses import asdict, dataclass, fields
 from datetime import datetime
 from pathlib import Path
 
-from altero import launch_agent, pace, state_watch
+from altero import bundle, launch_agent, pace, state_watch
 from altero.exceptions import ClaudeSwitchError, CredentialReadError
 from altero.printer import warning
 from altero.switcher import SENTINEL_NOTES
@@ -51,8 +51,12 @@ def ensure_notification_identity(
     Command-line Python tools have no app bundle, so rumps looks for an
     ``Info.plist`` beside the interpreter. uv/pipx reinstalls can recreate that
     environment; repair the tiny plist on every launch when needed.
+
+    Inside Altero.app there is nothing to do, and writing would do harm: the
+    engine's own ``Info.plist`` already names it, and a file added to
+    ``Contents/MacOS`` breaks the signature (or fails, in ``/Applications``).
     """
-    if platform != "darwin":
+    if platform != "darwin" or bundle.is_bundled():
         return None
     path = (executable or Path(sys.executable)).parent / "Info.plist"
     data: dict = {}
@@ -909,8 +913,16 @@ def run(switcher) -> int:
                 self._settings_menu(rumps),
                 rumps.MenuItem("Refresh now", callback=self.on_refresh_now),
                 self._login_item(rumps),
+                *self._cli_tool_items(rumps),
                 rumps.MenuItem("Quit", callback=self.on_quit),
             ]
+
+        def _cli_tool_items(self, rumps):
+            # Only Altero.app has a command to hand out; a pip/uv install
+            # already is one.
+            if not bundle.is_bundled():
+                return []
+            return [rumps.MenuItem("Install Command Line Tool…", callback=self.on_install_cli)]
 
         def _login_item(self, rumps):
             item = rumps.MenuItem("Open at Login", callback=self.on_toggle_login)
@@ -1147,6 +1159,13 @@ def run(switcher) -> int:
             except (ClaudeSwitchError, OSError) as e:
                 rumps.alert(title="Altero", message=str(e))
             self.rebuild_menu()
+
+        def on_install_cli(self, _sender):
+            try:
+                message = bundle.install_cli_tool()
+            except (ClaudeSwitchError, OSError) as e:
+                message = str(e)
+            rumps.alert(title="Install Command Line Tool", message=message)
 
         def on_quit(self, _sender):
             self._stop_engine()

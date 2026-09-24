@@ -144,6 +144,9 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.fullcontextlabs.altero.tests
+        # A test bundle still needs an Info.plist to be signed; Xcode 27
+        # refuses the build without one.
+        GENERATE_INFOPLIST_FILE: YES
         # The tests read the fixture out of their own bundle; a sandbox here
         # would only make the bundle harder to load.
         CODE_SIGN_ENTITLEMENTS: ""

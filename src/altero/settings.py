@@ -72,7 +72,25 @@ class UiSettings:
     theme: str = "auto"
 
 
-_SECTION_DEFAULT_SOURCES = {"autoswitch": AutoSwitchSettings, "ui": UiSettings}
+@dataclass(frozen=True)
+class ServiceSettings:
+    """Who runs the background services (``service`` section).
+
+    ``program`` pins the LaunchAgents to one executable. Altero.app writes its
+    own engine here when it installs them, and every altero then installs
+    that program rather than itself, so a pip/uv install becomes a client of
+    the app's services instead of repointing them. Unset (or no longer
+    executable): whichever altero ensures a service installs itself.
+    """
+
+    program: str | None = None
+
+
+_SECTION_DEFAULT_SOURCES = {
+    "autoswitch": AutoSwitchSettings,
+    "ui": UiSettings,
+    "service": ServiceSettings,
+}
 
 
 @dataclass(frozen=True)
@@ -147,6 +165,10 @@ SETTING_SPECS: dict[str, SettingSpec] = {
         SettingSpec(
             "ui", "theme", "theme", "choice", choices=("dark", "light", "auto"),
             help="Color theme; auto follows the terminal background",
+        ),
+        SettingSpec(
+            "service", "program", "program", "string",
+            help="Executable the background services run (Altero.app sets it)",
         ),
     )
 }
@@ -255,6 +277,13 @@ def load_ui_settings(backup_root: Path) -> UiSettings:
         )
         return default
     return UiSettings(theme=theme)
+
+
+def load_service_settings(backup_root: Path) -> ServiceSettings:
+    """Load the service section; anything but a non-empty string → unset."""
+    section = _read_raw(settings_path(backup_root)).get("service")
+    program = section.get("program") if isinstance(section, dict) else None
+    return ServiceSettings(program=program if isinstance(program, str) and program else None)
 
 
 def save_settings(backup_root: Path, settings: AutoSwitchSettings) -> None:
@@ -421,6 +450,7 @@ def effective_settings(backup_root: Path) -> list[tuple[SettingSpec, object, boo
     loaded = {
         "autoswitch": load_settings(backup_root),
         "ui": load_ui_settings(backup_root),
+        "service": load_service_settings(backup_root),
     }
     rows = []
     for spec in SETTING_SPECS.values():

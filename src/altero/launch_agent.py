@@ -19,6 +19,14 @@ upgrade; the running process is still the old code, which is why the plist
 also records the version that wrote it (see ``needs_install``). ``sys.executable -m
 altero`` stays as the fallback for installs that expose no console script.
 
+*One altero owns the services when Altero.app is installed.* Without the app
+the newest caller wins: whichever altero last ensured a service wrote the
+plist, so a dev checkout and a ``uv tool install`` take turns. With the app,
+two installs taking turns would restart the backend on alternating versions,
+so the app pins its engine in ``settings.json`` (``service.program``) and
+every altero installs the pinned program instead of itself (see
+:func:`service_program`).
+
 *Logs go to ``~/Library/Logs``, not ``/tmp``.* ``/tmp`` is world-writable and
 periodically purged, so a crash log can vanish before anyone reads it, and a
 predictable world-writable path is a poor place to point a long-lived writer.
@@ -39,7 +47,7 @@ import time
 from collections.abc import Sequence
 from pathlib import Path
 
-from altero import __version__
+from altero import __version__, bundle
 from altero.exceptions import ClaudeSwitchError
 
 LABEL = "com.fullcontextlabs.altero.menubar"
@@ -185,7 +193,14 @@ def resolve_program() -> list[str]:
     virtualenv, and resolving it would write that virtualenv-internal path
     into the plist — the very path this module avoids pinning, since a
     reinstall recreates the virtualenv while the symlink keeps its name.
+
+    Inside Altero.app the answer is the engine's own executable, however it
+    was invoked: a ``~/.local/bin/altero`` link into the app is a convenience
+    for terminals, and the app, not the link, is what gets installed.
     """
+    engine = bundle.engine_executable()
+    if engine is not None:
+        return [str(engine)]
     candidate = sys.argv[0] if sys.argv and sys.argv[0] else None
     if candidate is not None:
         absolute = Path(os.path.abspath(candidate))
@@ -197,6 +212,80 @@ def resolve_program() -> list[str]:
         return [str(Path(os.path.abspath(which)))]
 
     return [sys.executable, "-m", "altero"]
+
+
+def pinned_program(backup_root: Path | None = None) -> list[str] | None:
+    """The ``service.program`` pin, when it names an executable file."""
+    from altero import paths
+    from altero.settings import load_service_settings
+
+    program = load_service_settings(backup_root or paths.get_backup_root()).program
+    if program and os.path.isabs(program) and os.path.isfile(program) and os.access(program, os.X_OK):
+        return [program]
+    return None
+
+
+def pin_service_program(program: list[str], backup_root: Path | None = None) -> None:
+    """Record ``program`` as the one every altero installs the services with."""
+    from altero import paths
+    from altero.settings import set_setting
+
+    root = backup_root or paths.get_backup_root()
+    if pinned_program(root) != program:
+        set_setting(root, "service.program", program[0])
+
+
+_VERSION_TIMEOUT_SECONDS = 5.0
+_program_versions: dict[tuple[str, int], str | None] = {}
+
+
+def program_version(program: list[str]) -> str | None:
+    """What ``<program> --version`` reports, or None if it cannot say.
+
+    Cached per executable and modification time: a surface asks once per
+    open, and a replaced app is a new mtime.
+    """
+    try:
+        key = (program[0], os.stat(program[0]).st_mtime_ns)
+    except OSError:
+        return None
+    if key not in _program_versions:
+        try:
+            done = subprocess.run(
+                [*program, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=_VERSION_TIMEOUT_SECONDS,
+                check=False,
+            )
+            words = done.stdout.split()
+            version = words[-1] if done.returncode == 0 and words else None
+        except (OSError, subprocess.SubprocessError):
+            version = None
+        _program_versions[key] = version
+    return _program_versions[key]
+
+
+def service_program(backup_root: Path | None = None) -> tuple[list[str], str | None]:
+    """``(argv prefix, version)`` the LaunchAgents must run.
+
+    Altero.app's engine is always itself, and refuses when it runs from a
+    place that will not exist at the next login (see
+    ``bundle.require_installed_location``). Any other altero defers to a
+    pinned program when there is one, and reports that program's version,
+    not its own: the plist records who wrote it, and a client writing its
+    own version there would read as stale to the app. The version is None
+    when the pinned program cannot say; version drift then goes unchecked
+    rather than reinstalling on every call.
+    """
+    own = resolve_program()
+    if bundle.is_bundled():
+        bundle.require_installed_location(Path(own[0]))
+        return own, __version__
+    pinned = pinned_program(backup_root)
+    if pinned is None or pinned == own:
+        return own, __version__
+    return pinned, program_version(pinned)
 
 
 def _path_env(program: list[str]) -> str:
@@ -217,14 +306,21 @@ def build_plist(
     label: str = LABEL,
     home: Path | None = None,
     args: Sequence[str] = MENUBAR_ARGS,
+    version: str | None = __version__,
 ) -> bytes:
     """Serialize the LaunchAgent plist.
 
     Built with :mod:`plistlib` rather than a formatted XML string so paths
     containing ``&`` or ``<`` cannot produce a plist launchd refuses to parse.
+    Without an explicit ``program`` it is :func:`service_program`'s, version
+    included.
     """
-    program = program or resolve_program()
+    if program is None:
+        program, version = service_program()
     out_log, err_log = log_paths(label, home)
+    env = {"PATH": _path_env(program)}
+    if version is not None:
+        env["ALTERO_VERSION"] = version
     return plistlib.dumps(
         {
             "Label": label,
@@ -242,10 +338,7 @@ def build_plist(
             # release wrote the plist, because an upgrade keeps the console
             # script's path and so leaves ProgramArguments unchanged: without
             # it, needs_install could not tell the running agent is old code.
-            "EnvironmentVariables": {
-                "PATH": _path_env(program),
-                "ALTERO_VERSION": __version__,
-            },
+            "EnvironmentVariables": env,
             "StandardOutPath": str(out_log),
             "StandardErrorPath": str(err_log),
         }
@@ -414,15 +507,22 @@ def install(
     Idempotent: an already-loaded service is booted out first, so running this
     after an upgrade re-reads the plist instead of failing with launchd's
     "service already loaded" (EEXIST, code 5).
+
+    Altero.app's engine also pins itself (``service.program``) here, so from
+    now on a pip/uv altero installs the app's engine rather than itself.
     """
     _require_macos()
-    program = program or resolve_program()
+    version: str | None = __version__
+    if program is None:
+        program, version = service_program()
+        if bundle.is_bundled():
+            pin_service_program(program)
     target_plist = plist_path(label, home)
     out_log, err_log = log_paths(label, home)
 
     target_plist.parent.mkdir(parents=True, exist_ok=True)
     out_log.parent.mkdir(parents=True, exist_ok=True)
-    target_plist.write_bytes(build_plist(program, label, home, args))
+    target_plist.write_bytes(build_plist(program, label, home, args, version))
 
     settled = True
     if is_loaded(label, uid):
@@ -541,18 +641,22 @@ def needs_install(
 
     True when it isn't running, or when the plist on disk carries a different
     argv — another checkout or install put it there, and the newest caller
-    wins, so the build the user just ran is the one launchd holds.
+    wins, so the build the user just ran is the one launchd holds. With a
+    ``service.program`` pin the expected argv is the pinned program's, so no
+    caller wins: every altero converges on the pin (see
+    :func:`service_program`).
 
     Also true when the plist was written by another altero version. An upgrade
     (``altero upgrade``, ``uv tool upgrade``) keeps the console script's path,
     so the argv still matches while the running agent is the old code; the
     reinstall's bootout + bootstrap is what restarts it on the new code.
     """
+    program, version = service_program()
     current = status(label, uid, home)
     return (
         current["pid"] is None
-        or current["program"] != [*resolve_program(), *args]
-        or current["version"] != __version__
+        or current["program"] != [*program, *args]
+        or (version is not None and current["version"] != version)
     )
 
 
@@ -651,12 +755,18 @@ _PLACED_WIDGETS_STREAK_GAP_S = 60.0
 
 
 def widget_host_candidates(home: Path | None = None) -> list[Path]:
-    """Every binary that might answer ``--placed-widgets``, best first."""
+    """Every binary that might answer ``--placed-widgets``, best first.
+
+    Inside Altero.app, the app this engine ships in comes first: it is the
+    one whose widget the user placed.
+    """
     override = os.environ.get(WIDGET_APP_ENV)
+    own = bundle.host_app()
     apps = (
         [Path(override).expanduser()]
         if override
         else [
+            *([own] if own is not None else []),
             (home or Path.home()) / WIDGET_HOST_APP,
             SYSTEM_APPLICATIONS / WIDGET_HOST_APP.name,
         ]

@@ -312,9 +312,11 @@ icon, a window or a menu on any path. On the start URL it:
    the backend leaves alone), creating the directory 0700 if it is missing,
    and reloads the widget, which then shows "Starting…" while the marker is
    under 30s old and the snapshot still stale;
-2. finds altero: the snapshot's `alteroCommand` argv prefix, else the first
-   executable of `~/.local/bin/altero`, `/opt/homebrew/bin/altero`,
-   `/usr/local/bin/altero`;
+2. finds altero: the app's own engine
+   (`Contents/Helpers/AlteroEngine.app/Contents/MacOS/altero`) in the
+   distributed Altero.app, else the snapshot's `alteroCommand` argv prefix,
+   else the first executable of `~/.local/bin/altero`,
+   `/opt/homebrew/bin/altero`, `/usr/local/bin/altero`;
 3. runs `<altero> service start` (20s timeout; PATH extended with those
    directories, since a LaunchServices launch gets launchd's bare PATH);
 4. on success waits up to 5s for a snapshot newer than the click, reloads the
@@ -348,13 +350,25 @@ What a launch does now:
 | `--placed-widgets` | prints the count, exits; no `NSApplication` at all |
 | `altero://start-backend` | runs altero, writes its markers, quits |
 | any other URL | one log line, quits |
-| a stray widget tap, Finder, `open -a` | one log line, quits after 1s |
+| a plain launch (Finder, `open -a`, a stray widget tap) of the distributed app | after 1s, runs its engine's `altero menubar`, quits |
+| the same, from the disk image, App Translocation or `~/Downloads` | one alert: move Altero to Applications; quits |
+| a plain launch of a development build (no engine inside) | one log line, quits after 1s |
 
 That last second is the URL grace: `launchIsDefaultUserInfoKey` is missing on
 a cold URL launch (which reads as "plain") and the URL event can arrive after
 `applicationDidFinishLaunching`, so quitting at that moment would kill a Start
-tap before its URL was delivered. Double-clicking `Altero.app` in Finder
-therefore does nothing visible and leaves nothing running.
+tap before its URL was delivered.
+
+The distributed app (built by `packaging/build-app`) carries the Python engine
+in `Contents/Helpers`, and opening it is how a DMG user gets to the menu bar,
+so a plain launch runs `altero menubar`: it starts the menu bar and the backend
+if they are not running and exits either way. A stray widget tap therefore
+opens the menu bar too, which is what tapping a widget does for any app. The
+one alert is for an app opened where it cannot stay: services installed from
+the disk image or a translocated copy would point at a path that is gone by
+the next login, so it asks for the move instead (the engine refuses the same
+paths itself). A development build from `./build-widget install` has no engine
+and keeps the old behavior: double-clicking it does nothing visible.
 
 The host has no window to report in, so it logs: a line per launch and per
 start to `widget-requests/.host.log` (trimmed to the last 200 lines past 64KB)
