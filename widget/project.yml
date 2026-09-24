@@ -37,6 +37,9 @@ settings:
     # xcodebuild invocation. Host and extension must match or embedding
     # validation fails, so both Info.plists key off this one setting.
     CURRENT_PROJECT_VERSION: "1"
+    # The user-facing version. packaging/build-app sets it from pyproject.toml
+    # so the app, the engine and the DMG name agree; this is the fallback.
+    MARKETING_VERSION: "0.0.0"
 
 targets:
   # Stub. WidgetKit extensions cannot ship standalone, so the widget needs a
@@ -83,6 +86,7 @@ targets:
         LSApplicationCategoryType: public.app-category.developer-tools
         # Must match the extension's -- see CURRENT_PROJECT_VERSION above.
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
         # No Dock icon by default: a launch to handle altero://start-backend
         # runs altero and quits without showing anything. A plain launch opts
         # back in (setActivationPolicy(.regular)) while its window is open.
@@ -125,6 +129,7 @@ targets:
         CFBundleDisplayName: Altero
         # Must match the host's -- see CURRENT_PROJECT_VERSION above.
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
 
