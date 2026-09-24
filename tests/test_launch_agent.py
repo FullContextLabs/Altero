@@ -32,6 +32,23 @@ def _on_macos():
         yield
 
 
+# `_on_macos` patches the one process-wide `sys` module, so it also flips
+# locking.py's own win32/darwin branch — which decides, once at import time,
+# whether to `import msvcrt` or `import fcntl`. On real Windows that decision
+# was already made (msvcrt) before any test ran, so a test that then goes on
+# to touch the engine lock or `os.getuid()` hits a NameError/AttributeError
+# that a real darwin host never would. Applied only to tests that actually
+# reach one of those two calls; plenty of tests in this file mock
+# subprocess.run only and are unaffected.
+_needs_posix_lock_or_uid = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "reaches the engine lock or os.getuid() while sys.platform is "
+        "patched to darwin; real Windows Python has neither fcntl nor getuid"
+    ),
+)
+
+
 @pytest.fixture(autouse=True)
 def _isolated_system_applications(tmp_path, monkeypatch):
     """Point the ``/Applications`` host-app candidate at a tmp directory.
@@ -463,6 +480,7 @@ def test_status_program_is_none_when_no_plist_is_installed(tmp_path):
 # --- backend detection -----------------------------------------------------
 
 
+@_needs_posix_lock_or_uid
 def test_backend_is_loaded_asks_launchd_about_the_auto_label():
     with patch.object(launch_agent.subprocess, "run") as run:
         run.side_effect = _router({"print": _completed(0)})
@@ -471,6 +489,7 @@ def test_backend_is_loaded_asks_launchd_about_the_auto_label():
     assert printed and printed[0][2].endswith("/com.fullcontextlabs.altero.auto")
 
 
+@_needs_posix_lock_or_uid
 def test_backend_is_loaded_is_false_when_launchd_does_not_know_it():
     with patch.object(launch_agent.subprocess, "run") as run:
         run.side_effect = _router({"print": _completed(1)})
@@ -500,6 +519,7 @@ def test_engine_owner_reports_nobody_without_touching_the_lock_file(tmp_path):
     assert not (tmp_path / ".engine.lock").exists()
 
 
+@_needs_posix_lock_or_uid
 def test_engine_owner_reports_nobody_when_the_lock_is_free(tmp_path):
     from altero.locking import EngineLock, engine_lock_path
 
@@ -509,6 +529,7 @@ def test_engine_owner_reports_nobody_when_the_lock_is_free(tmp_path):
     assert launch_agent.engine_owner(tmp_path) == (launch_agent.ENGINE_NONE, "")
 
 
+@_needs_posix_lock_or_uid
 def test_engine_owner_recognises_this_process_holding_it(tmp_path):
     from altero.locking import EngineLock, engine_lock_path
 
@@ -522,6 +543,7 @@ def test_engine_owner_recognises_this_process_holding_it(tmp_path):
     assert str(os.getpid()) in detail
 
 
+@_needs_posix_lock_or_uid
 def test_engine_owner_names_the_backend_when_the_pids_match(tmp_path):
     _seed_owner(tmp_path, pid=4242, program="/tmp/altero auto --json")
     with patch.object(launch_agent, "backend_pid", lambda: 4242):
@@ -530,6 +552,7 @@ def test_engine_owner_names_the_backend_when_the_pids_match(tmp_path):
     assert "4242" in detail
 
 
+@_needs_posix_lock_or_uid
 def test_engine_owner_calls_a_foreign_holder_what_it_is(tmp_path):
     """A hand-run `altero auto` is neither us nor the service. A surface that
     called this "backend" would be as wrong as one that called it "ours"."""
@@ -712,6 +735,7 @@ class TestOpenAtLogin:
 
 
 class TestOpenSurface:
+    @_needs_posix_lock_or_uid
     def test_registers_then_ensures_the_backend(self, tmp_path):
         from altero import locking
 
@@ -733,6 +757,7 @@ class TestOpenSurface:
         finally:
             registration.release()
 
+    @_needs_posix_lock_or_uid
     def test_a_launchd_failure_still_opens_the_surface(self, tmp_path):
         with patch.object(
             launch_agent, "ensure_running", side_effect=ClaudeSwitchError("exit 5")
@@ -752,6 +777,7 @@ class TestOpenSurface:
         ensure.assert_not_called()
         assert not (tmp_path / ".surfaces").exists()
 
+    @_needs_posix_lock_or_uid
     def test_no_kind_ensures_without_registering(self, tmp_path):
         with patch.object(launch_agent, "ensure_running", return_value=False):
             registration, managed, _ = launch_agent.open_surface(tmp_path, None)
@@ -761,6 +787,8 @@ class TestOpenSurface:
 
 class TestRetireBackendIfIdle:
     """Last one out stops the backend, whatever autoswitch.enabled says."""
+
+    pytestmark = _needs_posix_lock_or_uid
 
     @staticmethod
     def _no_widgets(home: Path) -> "launch_agent.PlacedWidgets":
@@ -867,6 +895,10 @@ class TestTrimTheBackendLogs:
 
         assert out.stat().st_size == 0 and err.stat().st_size == 0
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="fcntl does not exist on Windows; this path is macOS-only in production",
+    )
     def test_a_log_descriptor_is_put_in_append_mode(self, tmp_path):
         # Without O_APPEND a write after the truncation lands at the old
         # offset and leaves a hole of NULs the whole length of the log. The
@@ -897,6 +929,8 @@ class TestARetiringBackendIsNotARunningOne:
     surface opening then was left managed by a process about to leave, with
     no plist to bring another back.
     """
+
+    pytestmark = _needs_posix_lock_or_uid
 
     def test_retirement_is_announced_before_the_plist_goes(self, tmp_path):
         _install_plist(tmp_path, launch_agent.AUTO_LABEL, [*PROGRAM, "auto"])
@@ -997,6 +1031,7 @@ class TestPlacedWidgetsKeepTheBackend:
         exe.write_text("#!/bin/sh\n")
         return exe
 
+    @_needs_posix_lock_or_uid
     def test_a_widget_in_slash_applications_keeps_the_backend(self, tmp_path):
         _install_plist(tmp_path, launch_agent.AUTO_LABEL, [*PROGRAM, "auto"])
         exe = self._app(tmp_path, launch_agent.SYSTEM_APPLICATIONS / "Altero.app")
@@ -1023,6 +1058,7 @@ class TestPlacedWidgetsKeepTheBackend:
     def _done(self, stdout: str, returncode: int = 0):
         return subprocess.CompletedProcess([], returncode, stdout=stdout, stderr="")
 
+    @_needs_posix_lock_or_uid
     def test_a_placed_widget_keeps_the_backend_and_its_plist(self, tmp_path):
         _install_plist(tmp_path, launch_agent.AUTO_LABEL, [*PROGRAM, "auto"])
         exe = self._app(tmp_path)
@@ -1038,6 +1074,7 @@ class TestPlacedWidgetsKeepTheBackend:
     def _retire(self, tmp_path, widgets) -> bool:
         return launch_agent.retire_backend_if_idle(tmp_path, home=tmp_path, widgets=widgets)
 
+    @_needs_posix_lock_or_uid
     def test_no_placed_widget_retires_once_confirmed(self, tmp_path):
         _install_plist(tmp_path, launch_agent.AUTO_LABEL, [*PROGRAM, "auto"])
         self._app(tmp_path)
@@ -1053,6 +1090,7 @@ class TestPlacedWidgetsKeepTheBackend:
         assert len(calls) == 2  # a zero is asked again, never cached
         assert not launch_agent.plist_path(launch_agent.AUTO_LABEL, tmp_path).exists()
 
+    @_needs_posix_lock_or_uid
     def test_a_zero_right_after_chronod_restarts_does_not_retire(self, tmp_path):
         # chronod answers 0 for a few seconds after a restart, then the truth.
         _install_plist(tmp_path, launch_agent.AUTO_LABEL, [*PROGRAM, "auto"])
@@ -1110,6 +1148,7 @@ class TestPlacedWidgetsKeepTheBackend:
             OSError("exec format error"),
         ],
     )
+    @_needs_posix_lock_or_uid
     def test_an_unknown_answer_counts_as_none_and_retires_once_confirmed(
         self, tmp_path, answer, capsys
     ):
@@ -1123,6 +1162,7 @@ class TestPlacedWidgetsKeepTheBackend:
             assert self._retire(tmp_path, widgets) is True
         assert "unknown" in capsys.readouterr().err
 
+    @_needs_posix_lock_or_uid
     def test_a_missing_app_retires_without_spawning(self, tmp_path, capsys):
         now = [0.0]
         widgets, run, calls = self._probe(iter([]), clock=lambda: now[0])
@@ -1157,6 +1197,7 @@ class TestPlacedWidgetsKeepTheBackend:
         assert len(err) == 2
         assert "1 widget(s) placed" in err[0] and "no widgets placed" in err[1]
 
+    @_needs_posix_lock_or_uid
     def test_an_open_surface_does_not_ask_the_app(self, tmp_path):
         from altero import locking
 

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import stat
+import sys
 from pathlib import Path
+
+import pytest
 
 from altero import widget_requests
 from altero.settings import load_settings, set_setting
@@ -24,6 +27,10 @@ def _drop(backup: Path, name: str, enabled, at: str = "2026-09-21T22:00:00Z") ->
     return path
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="asserts POSIX permission bits; Windows has no equivalent chmod semantics",
+)
 def test_the_directory_is_created_private(tmp_path):
     path = widget_requests.ensure_requests_dir(tmp_path)
     assert path == tmp_path / "widget-requests"
@@ -31,6 +38,10 @@ def test_the_directory_is_created_private(tmp_path):
     widget_requests.ensure_requests_dir(tmp_path)  # idempotent
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="asserts POSIX permission bits; Windows has no equivalent chmod semantics",
+)
 def test_an_existing_directory_is_corrected_to_0700(tmp_path):
     # mkdir(mode=) is masked by the umask and does nothing at all to a
     # directory that is already there — and anyone who can write this one can

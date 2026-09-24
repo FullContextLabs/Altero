@@ -437,6 +437,10 @@ class TestWriteSnapshotThroughSymlink:
     swaps a directory entry without following links, so renaming onto a
     symlinked path detaches it and the target silently stops updating."""
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="asserts POSIX permission bits; Windows has no equivalent chmod semantics",
+    )
     def test_the_link_survives_and_the_target_is_updated(self, tmp_path: Path):
         elsewhere = tmp_path / "elsewhere"; elsewhere.mkdir()
         target = elsewhere / "snapshot.json"

@@ -91,6 +91,12 @@ jobs:
       - name: Install swiftlint
         run: brew install swiftlint
 
+      # Signing.xcconfig is gitignored (per-developer Team ID). The example's
+      # blank DEVELOPMENT_TEAM is fine: the build below is unsigned.
+      - name: Set up Signing.xcconfig
+        working-directory: widget
+        run: cp Signing.xcconfig.example Signing.xcconfig
+
       - name: Generate Xcode project
         working-directory: widget
         run: xcodegen generate
