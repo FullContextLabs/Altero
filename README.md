@@ -19,12 +19,30 @@ Not affiliated with Anthropic.
 | TUI dashboard (`altero`, `altero watch`) | Yes | Yes | Yes |
 | Auto-switch engine | Background service | Foreground only | Foreground only |
 | Menu bar app | Yes | No | No |
-| Desktop widget | Yes (built from source) | No | No |
-| Signed, notarized app | Planned | No | No |
+| Desktop widget | Yes | No | No |
+| Signed, notarized app (Altero.app) | Yes | No | No |
 
 On macOS the auto-switch engine runs as a per-user LaunchAgent that the TUI and menu bar start on their own and that stops once no surface or widget is open. On Windows and Linux there is no system service. The engine runs only while `altero auto` or the TUI is open in a terminal. `altero menubar` and `altero service` refuse to run off macOS. For unattended use there, run `altero auto --once` from cron or a systemd timer.
 
 ## Install
+
+### macOS: Altero.app
+
+One app with everything: the CLI, the TUI, the menu bar, the background engine and the widget. Apple silicon, macOS 14 or later.
+
+1. Download `Altero-<version>.dmg` from [Releases](https://github.com/FullContextLabs/Altero/releases/latest).
+2. Open it and drag **Altero** into **Applications**.
+3. Open Altero from Applications. The menu bar icon (⇄) appears, and macOS notes that Altero added background items (the menu bar and the auto-switch engine, which start at login).
+4. For the `altero` command in a terminal, choose **Install Command Line Tool…** from the menu bar. It links `~/.local/bin/altero` to the app; if another `altero` (a uv or pip install) is already there, it is left alone and the menu shows the alternative.
+5. For the widget: right-click the desktop, **Edit Widgets**, and look for **Altero**.
+
+Altero refuses to start from the disk image or the Downloads folder, because its login services would point at a path that is gone at the next login. Move it to Applications first.
+
+To upgrade, quit Altero from its menu bar, replace the app in Applications with the new one, and open it again. A Homebrew cask is coming.
+
+If you also have a uv or pip install, the app's engine owns the background services and the other `altero` uses them instead of replacing them. `altero config unset service.program` hands them back until the app is opened again.
+
+### CLI with uv or pipx (macOS, Windows, Linux)
 
 Altero is not on PyPI yet. Install it from GitHub with [uv](https://docs.astral.sh/uv/) (Python 3.12+):
 
@@ -45,7 +63,7 @@ uv sync --all-extras
 uv run altero help
 ```
 
-The desktop widget is built from `widget/` with Xcode. See [widget/README.md](widget/README.md).
+To build the widget from source, see [widget/README.md](widget/README.md). To build Altero.app, see [RELEASING.md](RELEASING.md).
 
 ## Quick start
 
@@ -100,6 +118,7 @@ altero service logs -f         # macOS: follow its events
 - [ARCHITECTURE.md](ARCHITECTURE.md): the backend, the surfaces and the snapshot contract
 - [TESTING.md](TESTING.md): the test runbook
 - [widget/README.md](widget/README.md): building and installing the widget
+- [RELEASING.md](RELEASING.md): building, signing and notarizing Altero.app
 - [SECURITY.md](SECURITY.md): reporting a vulnerability
 - [CHANGELOG.md](CHANGELOG.md)
 

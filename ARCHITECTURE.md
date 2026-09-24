@@ -592,10 +592,29 @@ backend's republish. Achievable, not instant.
 
 ### Distribution
 
-A notarized DMG signed with a Developer ID Application certificate. Note that a
-plain `xcodebuild build` injects `com.apple.security.get-task-allow`, which is
-an automatic notarization rejection — the DMG must come from `archive` +
-`-exportArchive`.
+A notarized DMG of one app, signed with a Developer ID Application certificate:
+
+```
+Altero.app/Contents/MacOS/Altero                     widget host (Swift)
+Altero.app/Contents/PlugIns/AlteroWidgetExtension.appex
+Altero.app/Contents/Helpers/AlteroEngine.app         the Python package, frozen
+```
+
+The engine is a PyInstaller onedir app built from a uv-managed,
+non-framework CPython (a framework build does not draw the menu bar item on
+macOS 26), arm64 only. It is a nested app with its own bundle id
+(`com.fullcontextlabs.altero.engine`) because rumps needs a main bundle
+identifier for notifications, and sharing the host's would have LaunchServices
+deliver `altero://start-backend` to the running menu bar instead of the host.
+The LaunchAgents run its executable, pinned through `service.program` (see
+Backend lifetime). The menu bar stays rumps for now; the Keychain is still read
+through `/usr/bin/security`, so its ACLs judge the Apple-signed tool, not the
+app, and nothing new prompts.
+
+`packaging/build-app` archives the Xcode project unsigned and signs everything
+inside-out itself, so a plain build's `com.apple.security.get-task-allow` (an
+automatic notarization rejection) never reaches a release. Steps and
+prerequisites: [RELEASING.md](RELEASING.md).
 
 ## Current state
 

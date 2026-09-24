@@ -22,3 +22,7 @@ First release, 0.1.0.
   services from the disk image, App Translocation or `~/Downloads`, offers
   "Install Command Line Tool…" in the menu bar, and checks GitHub Releases
   for updates.
+- Altero.app: `packaging/build-app` builds the signed app with the engine
+  inside and a DMG, and with `--release` notarizes and staples both.
+  `packaging/install-app` upgrades an installed app without replacing it
+  under running services.

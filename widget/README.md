@@ -420,38 +420,17 @@ five minutes; a 0 is never cached.
 
 ## Distribution
 
-The widget ships as a notarized `.dmg` signed with a Developer ID Application
-certificate; hardened runtime is on (`ENABLE_HARDENED_RUNTIME: YES`) because
-notarization requires it. Users install that — they are not expected to build
-from source, and they keep using whatever `altero` they already have from PyPI.
+The widget ships inside Altero.app, which also carries the Python engine
+(`Contents/Helpers/AlteroEngine.app`), as a notarized DMG signed with a
+Developer ID Application certificate. `packaging/build-app` builds it and
+`./build-widget release` runs that script with `--release`; see
+[RELEASING.md](../RELEASING.md) for the prerequisites and steps.
 
-```bash
-xcrun notarytool store-credentials altero-notary \
-    --apple-id you@example.com --team-id ABCDE12345 \
-    --password <app-specific password>            # once
-./build-widget release
-```
-
-`release` archives, exports with `method: developer-id`, builds the DMG, signs
-it, notarizes, staples, and prints the path. `ExportOptions.plist` is generated
-into `build/` rather than committed, because it carries the Team ID. Set
-`NOTARY_PROFILE` if the keychain profile is named something other than
-`altero-notary`.
-
-The export is not interchangeable with a plain `xcodebuild build`: that injects
-`com.apple.security.get-task-allow`, which notarization rejects outright. So
-`release` proves the exported extension is clean before spending a submission
-on it, and stops if it is not:
-
-```bash
-codesign -d --entitlements - --xml \
-  build/export/Altero.app/Contents/PlugIns/AlteroWidgetExtension.appex \
-  | plutil -p -
-```
-
-**`release` is untested.** There is no Developer ID Application certificate on
-this machine, so it has only ever been run as far as its certificate check.
-Archive, export, DMG, notarization and stapling are written but unrun.
+The script archives this project unsigned and signs the host and the
+extension itself, with the entitlements files here, so the release never
+carries the `com.apple.security.get-task-allow` that a plain `xcodebuild build`
+injects (notarization rejects it outright). It checks every bundle for that key
+before it submits anything.
 
 ## Layout
 

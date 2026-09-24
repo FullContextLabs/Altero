@@ -473,9 +473,11 @@ in order; each step says what to expect.
   helpers it composes are tested; the wiring is reviewed, not executed.
 - **`backend_pid()` against a real loaded agent** — the pid-match branch is
   tested only with a patched function.
-- **The DMG / notarization path is entirely unrun.** No Developer ID
-  Application certificate exists yet, so `./widget/build-widget release` has
-  only ever reached its certificate gate.
+- **Notarization is unrun.** `packaging/build-app` has built, signed (Apple
+  Development and ad-hoc), verified and packaged the app, and the signed engine
+  has run its CLI, TUI and menu bar in an isolated `HOME`. `--release` has only
+  reached its preflight: no Developer ID Application certificate or
+  `altero-notary` profile existed yet.
 - **Cross-process `wake()` does not exist.** Changing the threshold no longer
   produces an immediate decision when the backend owns the engine; you wait for
   the next tick.
