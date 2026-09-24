@@ -1,5 +1,7 @@
 # Altero
 
+[![CI](https://github.com/FullContextLabs/Altero/actions/workflows/ci.yml/badge.svg)](https://github.com/FullContextLabs/Altero/actions/workflows/ci.yml)
+
 **Altero for Claude Code.** Keep several Claude Code accounts on one machine and switch between them without logging out. Altero watches every account's usage and switches for you before the active one hits its limit.
 
 Not affiliated with Anthropic.
