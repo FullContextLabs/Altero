@@ -15,6 +15,7 @@ unit-tested in CI; ``rumps`` is imported lazily inside the app glue.
 
 from __future__ import annotations
 
+import importlib.resources
 import json
 import logging
 import os
@@ -33,12 +34,48 @@ from altero.exceptions import ClaudeSwitchError, CredentialReadError
 from altero.printer import warning
 from altero.switcher import SENTINEL_NOTES
 
-ICON = "⇄"
+ICON = "⇄"  # text fallback, used only when the template image can't be loaded
 REFRESH_CHOICES: tuple[int, ...] = (30, 60, 300)
 AUTO_THRESHOLD_CHOICES: tuple[int, ...] = (80, 90, 95, 98)
 TITLE_PCT_CHOICES: tuple[str, ...] = ("off", "5h", "7d", "both")
 SWITCH_HISTORY_LIMIT = 10
 NOTIFICATION_BUNDLE_ID = "com.fullcontextlabs.altero.menubar"
+
+
+def menubar_icon_path() -> Path | None:
+    """Resolve the menu-bar template icon's on-disk path (the ``@1x`` PNG).
+
+    Uses ``importlib.resources`` so this resolves from a wheel install, an
+    editable install and the PyInstaller-frozen app alike -- all three ship
+    the asset as a real file on disk rather than inside a zip, so no
+    extraction step is needed. AppKit finds the paired ``@2x`` file itself,
+    by naming convention, as long as it sits beside this one, which the same
+    package-data collection ships it to (see ``widget/make-menubar-icon.swift``,
+    which generates both).
+
+    Returns ``None`` if the asset is missing (e.g. a packaging regression),
+    so the caller can fall back to the text glyph instead of crashing the
+    menu bar over a missing icon.
+    """
+    try:
+        ref = importlib.resources.files("altero") / "assets" / "menubar-template.png"
+    except (ModuleNotFoundError, TypeError):
+        return None
+    try:
+        if not ref.is_file():
+            return None
+    except OSError:
+        return None
+    return Path(str(ref))
+
+
+def compose_fallback_title(pct_text: str) -> str:
+    """Menu-bar title text to use when the template icon image failed to load.
+
+    Puts the text glyph back in as the icon's stand-in, the way the title was
+    built before there was an image icon at all.
+    """
+    return f"{ICON} {pct_text}" if pct_text else ICON
 
 
 def ensure_notification_identity(
@@ -320,9 +357,14 @@ def format_title(
     now: float | None = None,
     alias: str | None = None,
 ) -> str:
-    """Build the menu-bar title from the active account and settings."""
+    """Build the menu-bar title from the active account and settings.
+
+    The icon (a template image) carries the app's identity in the status
+    bar; the title holds only the percentages/name segments next to it, and
+    is empty when there's nothing to show.
+    """
     if active_email is None:
-        return ICON
+        return ""
     if now is None:
         now = time.time()
     segments: list[str] = []
@@ -346,9 +388,7 @@ def format_title(
             if isinstance(window, dict) and isinstance(window.get("pct"), (int, float)) and window.get("name"):
                 seg = _pct_segment(window["pct"], window, settings, now)
                 segments.append(f"{window['name']} {seg}")
-    if not segments:
-        return ICON
-    return f"{ICON} " + " · ".join(segments)
+    return " · ".join(segments)
 
 
 def format_usage_log(email: str, usage: dict | str | None) -> str | None:
@@ -598,9 +638,21 @@ def run(switcher) -> int:
     settings_path = switcher.backup_dir / "menubar_settings.json"
     log_path = switcher.backup_dir / "altero.log"
 
+    icon_path = menubar_icon_path()
+    if icon_path is None:
+        logging.getLogger("altero").warning(
+            "menu bar: template icon resource not found; falling back to the text glyph"
+        )
+
     class MenuBarApp(rumps.App):
         def __init__(self):
-            super().__init__(ICON, quit_button=None)
+            super().__init__(
+                ICON,
+                icon=str(icon_path) if icon_path else None,
+                template=True,
+                quit_button=None,
+            )
+            self._icon_loaded = icon_path is not None
             self.switcher = switcher
             self.settings = MenuBarSettings.load(settings_path)
             # The supported paced read path: per refresh it fetches only the
@@ -852,12 +904,13 @@ def run(switcher) -> int:
 
         # ---- menu construction -----------------------------------------------
         def _retitle(self):
-            title = format_title(
+            text = format_title(
                 self.snapshot["active_email"],
                 self.snapshot["active_usage"],
                 self.settings,
                 alias=self.snapshot.get("active_alias"),
             )
+            title = text if self._icon_loaded else compose_fallback_title(text)
             if title != self.title:
                 self.title = title
 
