@@ -11,11 +11,19 @@ import urllib.request
 from pathlib import Path
 from typing import NamedTuple
 
+from altero import bundle
 from altero.cache import CACHE_DIR, MISSING, read_cache, write_cache
 
 CACHE_PATH = CACHE_DIR / "update_check.json"
+APP_CACHE_PATH = CACHE_DIR / "update_check_app.json"
 CACHE_TTL = 24 * 3600  # 24 hours
 PYPI_URL = "https://pypi.org/pypi/altero/json"
+# Altero.app is not on PyPI; its releases are GitHub releases tagged vX.Y.Z.
+RELEASES_API_URL = "https://api.github.com/repos/FullContextLabs/Altero/releases/latest"
+APP_UPGRADE_HINT = (
+    f"Download the new Altero.app from {bundle.RELEASES_URL}, quit Altero from "
+    "its menu bar, and replace the app in Applications."
+)
 # Off until `altero` is published to PyPI under our control: before that, any
 # release someone else uploaded under the name would be announced here, and
 # `altero upgrade` would install it. Flip to True with the first release.
@@ -74,7 +82,9 @@ def _is_newer(latest: str, current: str) -> bool:
 
 
 def _detect_install_method() -> str | None:
-    """Return 'uv', 'pipx', or None if we can't tell."""
+    """Return 'app', 'uv', 'pipx', or None if we can't tell."""
+    if bundle.is_bundled():
+        return "app"
     prefix = Path(sys.prefix)
     parts = tuple(p.lower() for p in prefix.parts)
     pairs = list(zip(parts, parts[1:]))
@@ -98,30 +108,40 @@ def _detect_install_method() -> str | None:
 
 def check_for_update(current_version: str) -> str | None:
     """Return a notification string if a newer version exists, else None."""
-    if not PUBLISHED_ON_PYPI:
+    method = _detect_install_method()
+    app = method == "app"
+    # The GitHub repository is ours, so the app's check needs no PyPI gate.
+    if not app and not PUBLISHED_ON_PYPI:
         return None
+    cache_path = APP_CACHE_PATH if app else CACHE_PATH
     try:
         latest_version = None
 
         # Try reading cache
-        cached_data = read_cache(CACHE_PATH, CACHE_TTL)
+        cached_data = read_cache(cache_path, CACHE_TTL)
         if cached_data is not MISSING:
             latest_version = cached_data
         else:
-            # Fetch from PyPI
             try:
-                req = urllib.request.Request(PYPI_URL)
+                req = urllib.request.Request(RELEASES_API_URL if app else PYPI_URL)
                 with urllib.request.urlopen(req, timeout=2) as resp:
                     data = json.loads(resp.read().decode())
-                latest_version = data["info"]["version"]
+                if app:
+                    latest_version = data["tag_name"].removeprefix("v")
+                else:
+                    latest_version = data["info"]["version"]
             except Exception:
                 latest_version = None
 
             # Write cache regardless of success/failure
-            write_cache(CACHE_PATH, latest_version)
+            write_cache(cache_path, latest_version)
 
         if latest_version and _is_newer(latest_version, current_version):
-            method = _detect_install_method()
+            if app:
+                return (
+                    f"A newer version of Altero is available ({latest_version}). "
+                    f"You are using {current_version}. {APP_UPGRADE_HINT}"
+                )
             direct = {
                 "uv": "uv tool upgrade altero",
                 "pipx": "pipx upgrade altero",
@@ -153,6 +173,11 @@ def run_self_upgrade() -> int:
     from altero.printer import accent, error
 
     method = _detect_install_method()
+    if method == "app":
+        # Replacing a signed app is the user's (or Homebrew's) job; the engine
+        # cannot rewrite the bundle it runs from.
+        print(APP_UPGRADE_HINT)
+        return 1
     commands = {
         "uv": ["uv", "tool", "upgrade", "altero"],
         "pipx": ["pipx", "upgrade", "altero"],

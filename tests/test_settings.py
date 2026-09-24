@@ -15,8 +15,10 @@ from altero.settings import (
     SETTING_SPECS,
     atomic_write_json,
     AutoSwitchSettings,
+    ServiceSettings,
     UiSettings,
     effective_settings,
+    load_service_settings,
     load_settings,
     load_ui_settings,
     merged_with_cli,
@@ -184,9 +186,28 @@ class TestSettingSpecs:
         }
 
     def test_defaults_match_dataclass(self):
-        sources = {"autoswitch": AutoSwitchSettings(), "ui": UiSettings()}
+        sources = {
+            "autoswitch": AutoSwitchSettings(),
+            "ui": UiSettings(),
+            "service": ServiceSettings(),
+        }
         for spec in SETTING_SPECS.values():
             assert spec.default == getattr(sources[spec.section], spec.field)
+
+
+class TestServiceSettings:
+    def test_unset_by_default(self, tmp_path: Path):
+        assert load_service_settings(tmp_path) == ServiceSettings(program=None)
+
+    def test_set_and_unset_round_trip(self, tmp_path: Path):
+        set_setting(tmp_path, "service.program", "/Applications/Altero.app/x/altero")
+        assert load_service_settings(tmp_path).program == "/Applications/Altero.app/x/altero"
+        assert unset_setting(tmp_path, "service.program")
+        assert load_service_settings(tmp_path).program is None
+
+    def test_garbage_reads_as_unset(self, tmp_path: Path):
+        atomic_write_json(settings_path(tmp_path), {"service": {"program": 42}})
+        assert load_service_settings(tmp_path).program is None
 
 
 class TestSetUnsetSetting:

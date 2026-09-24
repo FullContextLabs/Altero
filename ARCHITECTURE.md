@@ -336,7 +336,16 @@ The backend runs exactly while some surface is open, or a widget is placed.
    ensures the backend: reinstall if it isn't running, if the plist's
    `ProgramArguments` differ from this build's (**newest caller wins**), or
    if the plist's `ALTERO_VERSION` (an `EnvironmentVariables` entry recording
-   the release that wrote it) differs from this process's version. An
+   the release that wrote it) differs from this process's version.
+   **Altero.app changes "this build" to "the pinned build".** When the app's
+   engine installs a service it records itself in `settings.json` as
+   `service.program`, and every altero that finds that pin executable
+   installs the pinned program, with that program's `--version`, instead of
+   itself (`launch_agent.service_program`). A pip/uv `altero` then opens as a
+   client of the app's backend rather than repointing it; with no pin, or a
+   pin to a deleted app, newest caller wins as before. The app's engine
+   refuses outright when it runs from the disk image, App Translocation or
+   `~/Downloads`, since the plist would name a path gone by the next login. An
    upgrade keeps the console script's path, so only the version shows the
    running agent is old code; the reinstall's bootout + bootstrap restarts it.
    Then it releases the lifecycle lock. If launchd fails, the surface still
@@ -368,7 +377,8 @@ The backend runs exactly while some surface is open, or a widget is placed.
    WidgetKit wakes the extension only to draw — so when no surface is live
    the backend asks the widget's host app: `Altero.app/Contents/MacOS/
    Altero --placed-widgets` prints `{"count": N}` and exits 0
-   (`launch_agent.PlacedWidgets`). It is looked for in `~/Applications`
+   (`launch_agent.PlacedWidgets`). The app's own engine asks its own app
+   first. Otherwise it is looked for in `~/Applications`
    (where `build-widget install` puts it) and then `/Applications` (where
    dragging it out of the .dmg puts it), first one that exists winning;
    `ALTERO_WIDGET_APP` names an `.app` anywhere else and overrides both. The

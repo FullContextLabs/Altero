@@ -139,12 +139,46 @@ enum BackendStart {
         (try? FileManager.default.attributesOfItem(atPath: path))?[.posixPermissions] as? Int
     }
 
-    /// The argv prefix that runs altero: the snapshot's `alteroCommand` when it
-    /// names an acceptable executable, else the first executable fallback
-    /// path.
+    /// Where the distributed Altero.app carries its Python engine, relative to
+    /// the app bundle. `packaging/build-app` puts it there; a development
+    /// build from `build-widget install` has none.
+    static let engineRelativePath = "Contents/Helpers/AlteroEngine.app/Contents/MacOS/altero"
+
+    static func bundledEngine(appBundle: URL) -> String {
+        appBundle.appending(path: engineRelativePath).path
+    }
+
+    /// Why the app at `appPath` must not install login services from where it
+    /// is, or nil. A LaunchAgent records an absolute path, and these three are
+    /// gone by the next login: the random App Translocation copy macOS runs a
+    /// quarantined app from, the mounted disk image, and Downloads. Mirrors
+    /// `bundle.relocation_problem` in the engine, which refuses too.
+    static func relocationProblem(appPath: String, home: String) -> String? {
+        if appPath.contains("/AppTranslocation/") {
+            return "macOS is running it from a temporary copy (App Translocation)"
+        }
+        if appPath.hasPrefix("/Volumes/") {
+            return "it is running from the disk image"
+        }
+        if appPath.hasPrefix("\(home)/Downloads/") {
+            return "it is running from the Downloads folder"
+        }
+        return nil
+    }
+
+    /// The argv prefix that runs altero: the app's own engine when it has one,
+    /// else the snapshot's `alteroCommand` when it names an acceptable
+    /// executable, else the first executable fallback path.
+    ///
+    /// The bundled engine comes first because it is the one the app signs and
+    /// ships, and the one the services are pinned to (`service.program`).
     static func alteroCommand(snapshot: Data?, home: String,
                               isExecutable: (String) -> Bool,
-                              mode: (String) -> Int? = fileMode) -> [String]? {
+                              mode: (String) -> Int? = fileMode,
+                              bundled: String? = nil) -> [String]? {
+        if let bundled, isExecutable(bundled) {
+            return [bundled]
+        }
         if let snapshot,
            let object = try? JSONSerialization.jsonObject(with: snapshot) as? [String: Any],
            let command = object["alteroCommand"] as? [String],
