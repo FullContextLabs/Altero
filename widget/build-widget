@@ -6,7 +6,8 @@
 #                              ~/Applications and register its extension, so
 #                              the widget appears in the widget gallery
 #   ./build-widget uninstall   deregister the extension and remove the app
-#   ./build-widget release     Developer ID archive -> notarized, stapled .dmg
+#   ./build-widget release     same as packaging/build-app --release: the full
+#                              Altero.app (engine included), notarized, as a .dmg
 #
 # The gallery only offers a widget whose extension pkd has registered, and pkd
 # only looks inside apps LaunchServices knows about. So "install" is a copy
@@ -121,55 +122,9 @@ holding it -- find it with: pluginkit -m -v -i $APPEX_ID"
 }
 
 release() {
-    preflight "Developer ID Application"
-    rm -rf "$BUILD/AlteroWidget.xcarchive" "$BUILD/export"
-    BUILD_NUMBER="$(date +%Y%m%d%H%M%S)"
-    xcodebuild -project AlteroWidget.xcodeproj -scheme AlteroWidgetHost \
-        -configuration Release -archivePath "$BUILD/AlteroWidget.xcarchive" \
-        -allowProvisioningUpdates CURRENT_PROJECT_VERSION="$BUILD_NUMBER" archive
-
-    # Generated rather than committed: it carries the Team ID, and build/ is
-    # gitignored.
-    TEAM="$(sed -n 's/^DEVELOPMENT_TEAM *= *//p' Signing.xcconfig | tr -d ' ')"
-    cat > "$BUILD/ExportOptions.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>method</key><string>developer-id</string>
-	<key>teamID</key><string>$TEAM</string>
-	<key>signingStyle</key><string>automatic</string>
-</dict>
-</plist>
-PLIST
-    xcodebuild -exportArchive -archivePath "$BUILD/AlteroWidget.xcarchive" \
-        -exportOptionsPlist "$BUILD/ExportOptions.plist" \
-        -exportPath "$BUILD/export" -allowProvisioningUpdates
-
-    # A plain `xcodebuild build` injects com.apple.security.get-task-allow,
-    # which notarization rejects outright. Prove the exported extension is
-    # clean before spending a submission on it.
-    APP="$BUILD/export/Altero.app"
-    if codesign -d --entitlements - --xml "$APP/$APPEX_REL" 2>/dev/null \
-        | plutil -p - | grep -q get-task-allow; then
-        die \
-"The exported extension carries com.apple.security.get-task-allow, which
-notarization rejects. That entitlement comes from a debug build, so the
-archive was not exported with method developer-id."
-    fi
-
-    VERSION="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Contents/Info.plist")"
-    DMG="$BUILD/altero-widget-$VERSION.dmg"
-    hdiutil create -volname "Altero Widget" -srcfolder "$APP" -ov -format UDZO "$DMG"
-    codesign --sign "Developer ID Application" --timestamp "$DMG"
-
-    xcrun notarytool submit "$DMG" --keychain-profile "${NOTARY_PROFILE:-altero-notary}" --wait || die \
-"notarytool failed. If the keychain profile does not exist yet, create it once:
-    xcrun notarytool store-credentials ${NOTARY_PROFILE:-altero-notary} \\
-        --apple-id <you@example.com> --team-id $TEAM \\
-        --password <app-specific password from appleid.apple.com>"
-    xcrun stapler staple "$DMG"
-    echo "$DMG"
+    # The distributable app also carries the Python engine, which this script
+    # does not build. One release path: packaging/build-app.
+    exec "$WIDGET/../packaging/build-app" --release
 }
 
 case "${1:-}" in

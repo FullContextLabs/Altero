@@ -1,0 +1,87 @@
+#!/bin/bash
+# Install or upgrade Altero.app without replacing it under running services.
+#
+#   packaging/install-app [APP] [DEST]
+#
+#   APP   the app to install; default: build/app/Altero.app
+#   DEST  where it goes; default: /Applications/Altero.app
+#
+# The engine is a PyInstaller bundle that loads modules lazily from files
+# inside the app. Replacing the app while its backend or menu bar runs lets
+# a later import in the old process read the new files, which fails in ways
+# that are hard to trace. So this stops the services that run the app being
+# replaced, swaps the app, and starts them again through the new engine,
+# which also records its version in the plists.
+#
+# Only services whose plist runs DEST are touched: a pip/uv altero's
+# services are not in the way and are left alone.
+set -euo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SRC="${1:-$REPO/build/app/Altero.app}"
+DEST="${2:-/Applications/Altero.app}"
+ENGINE_REL="Contents/Helpers/AlteroEngine.app/Contents/MacOS/altero"
+AUTO_LABEL="com.fullcontextlabs.altero.auto"
+MENUBAR_LABEL="com.fullcontextlabs.altero.menubar"
+DOMAIN="gui/$(id -u)"
+
+die() { echo "error: $*" >&2; exit 1; }
+
+SRC="${SRC%/}"
+DEST="${DEST%/}"
+[[ -x "$SRC/$ENGINE_REL" ]] || die "$SRC is not an Altero.app with an engine (build it with packaging/build-app)"
+[[ "$(cd "$(dirname "$SRC")" && pwd)/$(basename "$SRC")" != "$DEST" ]] || die "$SRC is already at $DEST"
+codesign --verify --deep --strict "$SRC" || die "$SRC does not pass codesign --verify"
+
+# Is launchd running this label from the app at DEST?
+runs_dest() {
+    local program
+    program="$(plutil -extract ProgramArguments.0 raw -o - "$HOME/Library/LaunchAgents/$1.plist" 2>/dev/null || true)"
+    [[ "$program" == "$DEST/"* ]] && launchctl print "$DOMAIN/$1" >/dev/null 2>&1
+}
+
+stop() {
+    launchctl bootout "$DOMAIN/$1" 2>/dev/null || true
+    for _ in $(seq 50); do
+        launchctl print "$DOMAIN/$1" >/dev/null 2>&1 || return 0
+        sleep 0.1
+    done
+    die "$1 did not stop within 5s; nothing was replaced"
+}
+
+stopped_menubar=0
+stopped_backend=0
+# The menu bar first: it is a surface, and the backend retires without one.
+if runs_dest "$MENUBAR_LABEL"; then stop "$MENUBAR_LABEL"; stopped_menubar=1; echo "Stopped the menu bar."; fi
+if runs_dest "$AUTO_LABEL"; then stop "$AUTO_LABEL"; stopped_backend=1; echo "Stopped the backend."; fi
+
+# Anything else running from the old app -- a TUI in a terminal, through the
+# ~/.local/bin link -- is not launchd's to stop.
+others="$(pgrep -f "$DEST/Contents/Helpers/" || true)"
+
+# Move aside first, so a failed copy leaves the old app restorable.
+previous=""
+if [[ -e "$DEST" ]]; then
+    previous="$DEST.previous-$$"
+    mv "$DEST" "$previous"
+fi
+if ! ditto "$SRC" "$DEST"; then
+    rm -rf "$DEST"
+    [[ -n "$previous" ]] && mv "$previous" "$DEST"
+    die "copying $SRC to $DEST failed; the previous app is back in place"
+fi
+[[ -n "$previous" ]] && rm -rf "$previous"
+echo "Installed $DEST ($("$DEST/$ENGINE_REL" --version))."
+
+# `altero menubar` ensures the backend too; `service start` alone is for a
+# backend that was running without the menu bar (a placed widget keeps it).
+if (( stopped_menubar )); then
+    "$DEST/$ENGINE_REL" menubar
+elif (( stopped_backend )); then
+    "$DEST/$ENGINE_REL" service start
+fi
+
+if [[ -n "$others" ]]; then
+    echo "Still running the previous version (quit and reopen them):"
+    ps -o pid=,command= -p "$(tr '\n' ',' <<<"$others" | sed 's/,$//')" | sed 's/^/  /'
+fi

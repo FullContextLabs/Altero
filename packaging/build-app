@@ -1,0 +1,350 @@
+#!/bin/bash
+# Build Altero.app -- the widget host, the widget, and the Python engine (CLI,
+# TUI, menu bar, backend) in one signed bundle -- and a DMG of it.
+#
+#   packaging/build-app             build, sign with the best identity found,
+#                                   verify, make the DMG
+#   packaging/build-app --release   the same, but Developer ID only, then
+#                                   notarize and staple the app and the DMG
+#
+# Layout of the result:
+#
+#   Altero.app/Contents/MacOS/Altero                    widget host (Swift)
+#   Altero.app/Contents/PlugIns/AlteroWidgetExtension.appex
+#   Altero.app/Contents/Helpers/AlteroEngine.app        PyInstaller, arm64
+#
+# Signing identity, first match wins: $ALTERO_SIGN_IDENTITY (a name, a SHA-1,
+# or "-" for ad-hoc); a "Developer ID Application" identity (for
+# $ALTERO_TEAM_ID or widget/Signing.xcconfig's team, when set); an "Apple
+# Development" identity; ad-hoc. Only Developer ID passes Gatekeeper, and only
+# --release insists on it.
+#
+# Environment (all optional; nothing here prompts, so it runs as-is in CI):
+#   ALTERO_SIGN_IDENTITY    force an identity
+#   ALTERO_TEAM_ID          Team ID; default: DEVELOPMENT_TEAM in widget/Signing.xcconfig
+#   ALTERO_NOTARY_PROFILE   notarytool keychain profile; default: altero-notary
+#   ALTERO_BUILD_NUMBER     CFBundleVersion; default: a timestamp
+#
+# Everything lands in build/app/ (gitignored), and each run starts it over.
+set -euo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WIDGET="$REPO/widget"
+BUILD="$REPO/build/app"
+PYTHON_VERSION="3.13"
+PYINSTALLER_VERSION="6.22.3"
+NOTARY_PROFILE="${ALTERO_NOTARY_PROFILE:-altero-notary}"
+BUILD_NUMBER="${ALTERO_BUILD_NUMBER:-$(date +%Y%m%d%H%M%S)}"
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
+
+RELEASE=0
+for arg in "$@"; do
+    case "$arg" in
+        --release) RELEASE=1 ;;
+        -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+        *) echo "usage: $(basename "$0") [--release]" >&2; exit 2 ;;
+    esac
+done
+
+die() { echo "error: $*" >&2; exit 1; }
+step() { printf '\n==> %s\n' "$*"; }
+
+# -- preflight -----------------------------------------------------------------
+
+for tool in uv xcodebuild xcodegen codesign hdiutil ditto iconutil; do
+    command -v "$tool" >/dev/null || die "$tool not found (uv and xcodegen: brew install uv xcodegen)"
+done
+[[ "$(uname -m)" == arm64 ]] || die "the engine is built for arm64 and must be built on Apple silicon"
+
+TEAM_ID="${ALTERO_TEAM_ID:-}"
+if [[ -z "$TEAM_ID" && -f "$WIDGET/Signing.xcconfig" ]]; then
+    TEAM_ID="$(sed -n 's/^DEVELOPMENT_TEAM *= *\([A-Z0-9]*\).*/\1/p' "$WIDGET/Signing.xcconfig")"
+fi
+
+IDENTITIES="$(security find-identity -v -p codesigning 2>/dev/null || true)"
+
+# Prints "<sha1> <name>" of the first valid identity whose name matches $1.
+find_identity() {
+    { grep -E "\"$1" <<<"$IDENTITIES" || true; } | sed -E 's/^ *[0-9]+\) ([0-9A-F]{40}) "(.*)"$/\1 \2/' | head -1
+}
+
+if [[ -n "${ALTERO_SIGN_IDENTITY:-}" ]]; then
+    IDENTITY="$ALTERO_SIGN_IDENTITY"
+    if [[ "$IDENTITY" == "-" ]]; then
+        IDENTITY_NAME="ad-hoc"
+    else
+        IDENTITY_NAME="$({ grep -F "$IDENTITY" <<<"$IDENTITIES" || true; } | sed -E 's/.*"(.*)"$/\1/' | head -1)"
+        [[ -n "$IDENTITY_NAME" ]] || die "ALTERO_SIGN_IDENTITY=$IDENTITY is not a valid code signing identity here"
+    fi
+else
+    # A Developer ID name ends in "(TEAMID)"; an Apple Development one ends in
+    # the member id instead, so only Developer ID can be matched on the team.
+    found="$(find_identity "Developer ID Application: .*${TEAM_ID:+\($TEAM_ID\)}")"
+    [[ -n "$found" ]] || found="$(find_identity "Apple Development: ")"
+    if [[ -n "$found" ]]; then
+        IDENTITY="${found%% *}"
+        IDENTITY_NAME="${found#* }"
+    else
+        IDENTITY="-"
+        IDENTITY_NAME="ad-hoc"
+    fi
+fi
+case "$IDENTITY_NAME" in
+    "Developer ID Application:"*) SIGN_KIND="developer-id" ;;
+    "Apple Development:"*)        SIGN_KIND="development" ;;
+    ad-hoc)                       SIGN_KIND="ad-hoc" ;;
+    *)                            SIGN_KIND="other" ;;
+esac
+
+if (( RELEASE )); then
+    missing=()
+    [[ -n "$TEAM_ID" ]] || missing+=("a Team ID: set DEVELOPMENT_TEAM in widget/Signing.xcconfig (or ALTERO_TEAM_ID)")
+    [[ "$SIGN_KIND" == developer-id ]] || missing+=("a \"Developer ID Application\" signing identity${TEAM_ID:+ for team $TEAM_ID} in the keychain (found: $IDENTITY_NAME)")
+    if ! xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1; then
+        missing+=("the notarytool keychain profile \"$NOTARY_PROFILE\": xcrun notarytool store-credentials $NOTARY_PROFILE --apple-id <id> --team-id ${TEAM_ID:-<TEAMID>} --password <app-specific password>")
+    fi
+    if (( ${#missing[@]} )); then
+        echo "error: --release needs:" >&2
+        printf '  - %s\n' "${missing[@]}" >&2
+        echo "See RELEASING.md." >&2
+        exit 1
+    fi
+fi
+
+echo "Signing identity: $IDENTITY_NAME ($SIGN_KIND)"
+case "$SIGN_KIND" in
+    developer-id) ;;
+    development) echo "  Apple Development: runs on this Mac and passes codesign --verify, but Gatekeeper rejects it elsewhere. Local testing only." ;;
+    ad-hoc) echo "  Ad-hoc: no Team ID. Local testing only; Gatekeeper rejects it." ;;
+esac
+# A secure timestamp is what notarization requires; everything else signs
+# offline, so a CI run without network access still gets through.
+if [[ "$SIGN_KIND" == developer-id ]]; then TIMESTAMP=(--timestamp); else TIMESTAMP=(--timestamp=none); fi
+# The hardened runtime enforces library validation: every library must carry
+# the executable's Team ID. Ad-hoc signatures have none, so under it the
+# engine cannot load its own libpython. Ad-hoc cannot be notarized anyway,
+# which is the only reason for the runtime, so an ad-hoc build goes without.
+if [[ "$SIGN_KIND" == ad-hoc ]]; then RUNTIME=(); else RUNTIME=(--options runtime); fi
+
+rm -rf "$BUILD"
+mkdir -p "$BUILD"
+
+# -- (a) the engine ------------------------------------------------------------
+
+step "Engine: CPython $PYTHON_VERSION (uv-managed, non-framework) + PyInstaller $PYINSTALLER_VERSION"
+VENV="$BUILD/engine-venv"
+PY="$VENV/bin/python"
+# uv's managed interpreters are python-build-standalone: not a framework
+# build, which on macOS 26 does not draw a menu bar item (see menubar.py).
+uv venv --quiet --python "$PYTHON_VERSION" --managed-python "$VENV"
+"$PY" -c 'import sys; assert not getattr(sys, "_framework", ""), "framework build"'
+# Exactly the locked dependency set, hash-checked; then altero itself.
+uv export --quiet --locked --no-dev --extra menubar --no-emit-project \
+    --project "$REPO" -o "$BUILD/engine-requirements.txt"
+uv pip install --quiet --python "$PY" --require-hashes -r "$BUILD/engine-requirements.txt"
+uv pip install --quiet --python "$PY" --no-deps "$REPO"
+uv pip install --quiet --python "$PY" "pyinstaller==$PYINSTALLER_VERSION"
+
+VERSION="$("$PY" -c 'from importlib.metadata import version; print(version("altero"))')"
+# CFBundleShortVersionString is up to three integers; 0.1.0.dev0 -> 0.1.0.
+SHORT_VERSION="$("$PY" -c 'import re, sys; print(re.match(r"\d+(\.\d+){0,2}", sys.argv[1]).group(0))' "$VERSION")"
+echo "Version: $VERSION ($SHORT_VERSION, build $BUILD_NUMBER)"
+
+ICONSET="$BUILD/AppIcon.iconset"
+mkdir -p "$ICONSET"
+while read -r px name; do
+    cp "$WIDGET/App/Assets.xcassets/AppIcon.appiconset/icon_$px.png" "$ICONSET/icon_$name.png"
+done <<'SIZES'
+16 16x16
+32 16x16@2x
+32 32x32
+64 32x32@2x
+128 128x128
+256 128x128@2x
+256 256x256
+512 256x256@2x
+512 512x512
+1024 512x512@2x
+SIZES
+iconutil -c icns -o "$BUILD/AppIcon.icns" "$ICONSET"
+
+ALTERO_SHORT_VERSION="$SHORT_VERSION" ALTERO_BUILD_NUMBER="$BUILD_NUMBER" \
+ALTERO_ENGINE_ICON="$BUILD/AppIcon.icns" \
+    "$VENV/bin/pyinstaller" --noconfirm --clean --log-level WARN \
+    --distpath "$BUILD/engine-dist" --workpath "$BUILD/engine-work" \
+    "$REPO/packaging/altero-engine.spec"
+[[ -f "$BUILD/engine-dist/AlteroEngine.app/Contents/Resources/altero/tui/altero.tcss" ]] \
+    || die "the TUI stylesheet was not collected into the engine"
+
+# -- (b) the host app and the widget -------------------------------------------
+
+step "Host app: xcodebuild archive (arm64, unsigned; signed below)"
+# Unsigned on purpose: the whole bundle is signed inside-out below, with the
+# entitlements files in the repo, which needs no Xcode account and no
+# provisioning, and never picks up the get-task-allow a development signature
+# carries. An -exportArchive would only re-sign what is about to be re-signed.
+(cd "$WIDGET" && xcodegen generate --quiet)
+xcodebuild -quiet -project "$WIDGET/AlteroWidget.xcodeproj" -scheme AlteroWidgetHost \
+    -configuration Release -destination 'generic/platform=macOS' \
+    -derivedDataPath "$BUILD/dd" -archivePath "$BUILD/Altero.xcarchive" \
+    ARCHS=arm64 ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO \
+    MARKETING_VERSION="$SHORT_VERSION" CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+    archive
+
+# -- (c) nest the engine -------------------------------------------------------
+
+step "Assemble"
+APP="$BUILD/Altero.app"
+APPEX="$APP/Contents/PlugIns/AlteroWidgetExtension.appex"
+ENGINE_APP="$APP/Contents/Helpers/AlteroEngine.app"
+ENGINE="$ENGINE_APP/Contents/MacOS/altero"
+ditto "$BUILD/Altero.xcarchive/Products/Applications/Altero.app" "$APP"
+mkdir -p "$APP/Contents/Helpers"
+ditto "$BUILD/engine-dist/AlteroEngine.app" "$ENGINE_APP"
+
+# xcodebuild registers what it builds with LaunchServices, and a second
+# registered copy of the widget extension can take the widget away from the
+# installed app (see widget/README.md). None of these are meant to be found.
+unregister_build_products() {
+    local app
+    while IFS= read -r -d '' app; do
+        "$LSREGISTER" -u "$app" >/dev/null 2>&1 || true
+    done < <(find "$BUILD" -name '*.app' -type d -prune -print0 2>/dev/null)
+}
+unregister_build_products
+
+# -- (d) sign, inside-out ------------------------------------------------------
+
+step "Sign ($IDENTITY_NAME${RUNTIME[*]:+, hardened runtime}), inside-out"
+sign() {
+    codesign --force --sign "$IDENTITY" ${RUNTIME[@]+"${RUNTIME[@]}"} "${TIMESTAMP[@]}" "$@" 2>&1 \
+        | { grep -v 'replacing existing signature' || true; }
+}
+
+is_macho() { file -b "$1" | grep -q '^Mach-O'; }
+
+# Every Mach-O in the engine that is not its main executable: the Python
+# library and the extension modules. Deepest first, though none nest today.
+count=0
+while IFS= read -r -d '' f; do
+    if [[ "$f" != "$ENGINE" ]] && is_macho "$f"; then
+        sign "$f"
+        count=$((count + 1))
+    fi
+done < <(find "$ENGINE_APP/Contents" -type f -print0 | sort -rz)
+echo "  $count engine libraries"
+# The engine needs no entitlements under the hardened runtime: no JIT, no
+# unsigned memory, and every library carries this same signature.
+sign "$ENGINE_APP"
+
+# The extension and the host keep exactly the entitlements in the repo,
+# minus their comments: codesign's parser rejects XML comments, which Xcode
+# strips before it signs.
+plutil -convert xml1 -o "$BUILD/widget.entitlements" "$WIDGET/Widget/AlteroWidgetExtension.entitlements"
+plutil -convert xml1 -o "$BUILD/host.entitlements" "$WIDGET/App/AlteroWidgetHost.entitlements"
+sign --entitlements "$BUILD/widget.entitlements" "$APPEX"
+sign --entitlements "$BUILD/host.entitlements" "$APP"
+
+# -- (e) verify ----------------------------------------------------------------
+
+step "Verify"
+codesign --verify --deep --strict --verbose=2 "$APP" 2>&1 \
+    | { grep -v -e '--prepared:' -e '--validated:' || true; } | sed 's/^/  /'
+for bundle in "$APP" "$APPEX" "$ENGINE_APP"; do
+    if codesign -d --entitlements - --xml "$bundle" 2>/dev/null | grep -q get-task-allow; then
+        die "$bundle carries com.apple.security.get-task-allow, which notarization rejects"
+    fi
+done
+echo "  no get-task-allow"
+[[ "$(lipo -archs "$ENGINE")" == arm64 && "$(lipo -archs "$APP/Contents/MacOS/Altero")" == arm64 ]] \
+    || die "expected arm64-only executables"
+reported="$("$ENGINE" --version 2>&1)" || die "the signed engine does not run: $reported"
+[[ "$reported" == "altero $VERSION" ]] || die "the signed engine reports '$reported', expected 'altero $VERSION'"
+echo "  signed engine runs: $reported"
+
+# Gatekeeper only accepts Developer ID (and, for a quarantined download, a
+# notarization ticket). Anything else is expected to fail here: report it,
+# and fail only a release. A release checks again after stapling.
+gatekeeper() {
+    local out rc=0
+    out="$(spctl -a -vv -t exec "$APP" 2>&1)" || rc=$?
+    sed 's/^/  /' <<<"$out"
+    return $rc
+}
+if gatekeeper; then GATEKEEPER="accepted"; else GATEKEEPER="rejected"; fi
+if [[ "$GATEKEEPER" == rejected ]]; then
+    (( RELEASE )) && [[ "$SIGN_KIND" != developer-id ]] && die "Gatekeeper rejected the app"
+    [[ "$SIGN_KIND" == developer-id ]] || echo "  (expected without a Developer ID signature)"
+fi
+
+# -- (g, part 1) notarize and staple the app -----------------------------------
+
+notarize() {
+    local file="$1" out id status
+    out="$(xcrun notarytool submit "$file" --keychain-profile "$NOTARY_PROFILE" --wait --output-format json)" \
+        || die "notarytool submit failed for $file: $out"
+    id="$(plutil -extract id raw -o - - <<<"$out")"
+    status="$(plutil -extract status raw -o - - <<<"$out")"
+    echo "  $(basename "$file"): $status (submission $id)"
+    if [[ "$status" != Accepted ]]; then
+        xcrun notarytool log "$id" --keychain-profile "$NOTARY_PROFILE" >&2 || true
+        die "notarization of $file was $status"
+    fi
+}
+
+NOTARIZED="no"
+if (( RELEASE )); then
+    step "Notarize the app"
+    ditto -c -k --keepParent "$APP" "$BUILD/Altero-notarize.zip"
+    notarize "$BUILD/Altero-notarize.zip"
+    xcrun stapler staple "$APP"
+    rm -f "$BUILD/Altero-notarize.zip"
+    # The ticket is what makes a copy dragged out of the DMG launch offline.
+    gatekeeper || die "Gatekeeper rejected the notarized app"
+    GATEKEEPER="accepted (notarized)"
+fi
+
+# -- (f) the DMG ---------------------------------------------------------------
+
+step "DMG"
+DMG="$BUILD/Altero-$VERSION.dmg"
+STAGE="$BUILD/dmg"
+mkdir -p "$STAGE"
+ditto "$APP" "$STAGE/Altero.app"
+ln -s /Applications "$STAGE/Applications"
+hdiutil create -quiet -volname "Altero" -srcfolder "$STAGE" -fs HFS+ \
+    -format UDZO -imagekey zlib-level=9 -ov "$DMG"
+unregister_build_products  # the staging copy, before it disappears
+rm -rf "$STAGE"
+hdiutil verify -quiet "$DMG" || die "hdiutil verify failed for $DMG"
+if [[ "$SIGN_KIND" != ad-hoc ]]; then
+    codesign --force --sign "$IDENTITY" "${TIMESTAMP[@]}" "$DMG"
+fi
+
+if (( RELEASE )); then
+    step "Notarize the DMG"
+    notarize "$DMG"
+    xcrun stapler staple "$DMG"
+    spctl -a -vv -t open --context context:primary-signature "$DMG" 2>&1 | sed 's/^/  /' \
+        || die "Gatekeeper rejected the notarized DMG"
+    NOTARIZED="yes (app and DMG stapled)"
+fi
+
+unregister_build_products
+
+# -- summary -------------------------------------------------------------------
+
+step "Summary"
+cat <<SUMMARY
+  version       $VERSION (CFBundleShortVersionString $SHORT_VERSION, build $BUILD_NUMBER)
+  identity      $IDENTITY_NAME ($SIGN_KIND)
+  app           $APP ($(du -sh "$APP" | awk '{print $1}'))
+  engine        $ENGINE
+  dmg           $DMG ($(du -h "$DMG" | awk '{print $1}'))
+  codesign      verified (--deep --strict)
+  gatekeeper    $GATEKEEPER
+  notarized     $NOTARIZED
+SUMMARY
+if (( ! RELEASE )); then
+    echo "  Not for distribution: run with --release (Developer ID + notarization) for that."
+fi
