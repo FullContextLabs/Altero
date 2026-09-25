@@ -21,6 +21,23 @@ follows [Semantic Versioning](https://semver.org/).
   item, the one Claude Code reads there (upstream
   [#357](https://github.com/realiti4/claude-swap/pull/357) by
   @BarganConstantin).
+- `swap` and `move` no longer leave an orphaned macOS Keychain item behind for
+  a relocated session profile (upstream
+  [#360](https://github.com/realiti4/claude-swap/pull/360) by
+  @BarganConstantin).
+- A long-running process no longer reads a residual Keychain item (the account
+  just switched away from) after an unverified file-mode fallback (upstream
+  [#361](https://github.com/realiti4/claude-swap/pull/361) by
+  @BarganConstantin).
+- Session guards now refuse when a profile's sessions directory cannot be
+  listed, instead of treating it as having no live sessions (upstream
+  [#363](https://github.com/realiti4/claude-swap/pull/363) by
+  @BarganConstantin).
+- A slot whose session profile holds a newer live token family is no longer
+  reported as "re-login needed" because its stored backup's refresh token was
+  rotated away; a profile a switch would not adopt keeps the verdict, so
+  auto-switch cannot land on the dead backup (upstream [#351](https://github.com/realiti4/claude-swap/pull/351) by
+  @digitalcostas).
 
 ## [0.1.1] - 2026-09-25
 

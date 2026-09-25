@@ -2853,8 +2853,9 @@ class ClaudeAccountSwitcher:
     def _delete_session_profile(self, account_num: str, email: str) -> None:
         """Remove an account's session profile dir and its keychain entry.
 
-        Keychain first: the hashed service name is derived from the dir path
-        and can't be recomputed once the dir is gone.
+        Keychain first, and unconditionally: the hashed service name is
+        derived from the dir PATH, which this call always has, so the entry
+        is deletable whether or not the dir is still there.
 
         The stale marker is a SIBLING of the dir, so ``rmtree`` does not take
         it: clear it explicitly, or the next profile created for this same
@@ -2866,8 +2867,16 @@ class ClaudeAccountSwitcher:
         )
 
         session_dir = self._session_dir(account_num, email)
+        # NOT under an `exists()` guard. swap and move relocate the profile
+        # with `os.replace` and only then prune the old slot key, so by the
+        # time this runs the old dir is exactly what no longer exists -- and
+        # the keychain entry does not follow a relocated dir, because its
+        # service name hashes the path. Guarding the delete on the dir left
+        # that entry, holding the account's rotated tokens, at a name no
+        # command names again: `purge` builds its list from the profile dirs
+        # that still exist, so it never reaches it either.
+        delete_macos_keychain_entry(session_dir)
         if session_dir.exists():
-            delete_macos_keychain_entry(session_dir)
             shutil.rmtree(session_dir, ignore_errors=True)
         # NOT under that `if`. The marker lives OUTSIDE the dir, so it
         # outlives it: `purge` removes profile dirs (`iterdir()` + `is_dir()`)
@@ -4883,6 +4892,48 @@ class ClaudeAccountSwitcher:
             struck_fp=outcome.struck_fp,
         )
 
+    def _session_profile_state(
+        self, num: str, email: str, org_uuid: str
+    ) -> str | None:
+        """Whether this slot's session profile holds a live token family,
+        for the quarantine loop in ``_collect_usage_entries``.
+
+        Measured on a real install: a slot's backup refresh token dies for
+        good, and is EXPECTED to, the moment a session profile takes over the
+        account's credential truth (see ``_fetch_account_usage``) — Claude
+        Code rotates the family inside the profile and nothing syncs the new
+        generation back, so the backup's refresh token is a consumed
+        generation the server 401s forever. The quarantine loop only ever
+        sees the backup, so left unchecked it reports "re-login needed" on a
+        slot whose profile is perfectly healthy.
+
+        Returns ``"fresh"`` when the profile carries a refresh token, is not
+        drifted to a different account, and its access token is not expired
+        — ``_fetch_account_usage``'s own session-profile branch can read it
+        right now. Returns ``"idle"`` for the same profile with an expired
+        access token — the family is alive, only Claude Code renews it (on
+        the profile's next run), so this is an ordinary wait, not a dead
+        lineage. Returns ``None`` when there is no usable profile credential
+        (absent, no refresh token, or drifted to a different account) — the
+        backup's dead verdict stands.
+
+        Only a profile :meth:`_session_profile_ahead` accepts counts: that is
+        the same test every adoption site applies before the backup is
+        replaced (the collector's idle fetch, the consume gate,
+        ``_perform_switch``). A profile it rejects — stale-marked, on the
+        backup's own generation, or behind it — is never adopted, so lifting
+        the quarantine on it would let auto-switch activate the dead backup.
+        """
+        session_creds = self._session_profile_ahead(num, email, org_uuid)
+        if not session_creds:
+            return None
+        data = oauth.extract_oauth_data(session_creds)
+        if not data or not data.get("refreshToken"):
+            return None
+        if oauth.is_oauth_token_expired(data.get("expiresAt")):
+            return "idle"
+        return "fresh"
+
     def _read_only_fetch(
         self, num: str, email: str, creds: str, rejected_fp: str | None
     ) -> FetchRecord:
@@ -4978,7 +5029,42 @@ class ClaudeAccountSwitcher:
             entry = entries[num]
             _i = info_by_num[num]
             if self._entry_token_dead(entry, num, _i[1], _i[5], _i[4]):
-                sentinels[num] = USAGE_RELOGIN_REQUIRED
+                # A dead BACKUP is expected, not a fault, once a session
+                # profile has taken over the account's credential truth (see
+                # the comment in ``_fetch_account_usage``): the profile's
+                # token family rotates on its own and nothing syncs the new
+                # generation back, so the backup's refresh token is a
+                # consumed generation forever. Quarantining on the backup
+                # alone would report "re-login needed" on a slot whose
+                # profile is perfectly healthy — and the fix that message
+                # names (re-login the default login) wipes that profile
+                # (``_post_backup_write`` → ``_invalidate_session_credentials``).
+                # Non-active only: the active slot's own live credential is
+                # already one of ``_entry_token_dead``'s two stored sources.
+                profile_state = (
+                    None if _i[4] else self._session_profile_state(num, _i[1], _i[3])
+                )
+                if profile_state == "fresh":
+                    # The profile can be fetched right now (read-only, via
+                    # ``_fetch_account_usage``'s existing session-profile
+                    # branch) — clear the backup's stale strike so display
+                    # and fetch eligibility (``_row_eligible`` gates on the
+                    # raw count) agree, same as the "fingerprint healed"
+                    # branch below.
+                    self._usage_store.clear_dead_token(
+                        [num], {num: identities[num]}
+                    )
+                    entries = store.entries(identities, models)
+                elif profile_state == "idle":
+                    # The family is alive but its access token has expired;
+                    # only Claude Code, on the profile's next run, may renew
+                    # it — the same wait as an expired active token, not a
+                    # dead lineage. Leave the backup's strike alone: it is
+                    # the correct verdict for the backup, only the slot's
+                    # displayed status must not read as "re-login needed".
+                    sentinels[num] = USAGE_TOKEN_EXPIRED
+                else:
+                    sentinels[num] = USAGE_RELOGIN_REQUIRED
             elif entry.auth_dead_strikes and entry.token_dead():
                 # Struck, but no stored source still matches the condemned
                 # generation — the fingerprint healed the verdict.
