@@ -779,6 +779,12 @@ class CredentialStore:
         resurrect it. Best-effort: when the Keychain is down the delete
         can't run, which is the documented recovery residual.
 
+        Clears the item(s) :func:`_active_oauth_keychain_services` resolves, the
+        same set the read walks. The fixed name deleted the DEFAULT profile's
+        login from a custom profile while leaving in place the hashed item that
+        actually shadows the seed we just wrote — so claude kept serving the
+        outgoing account (#206).
+
         Returns whether no active item can shadow the file. ``delete_password``
         returns only on rc 0 or rc 44 (already absent) and raises otherwise, so
         a return is proof — which is the fact ``_pin_file_mode`` needs and used
@@ -786,13 +792,15 @@ class CredentialStore:
         """
         if self._host.platform != Platform.MACOS:
             return True
-        try:
-            macos_keychain.delete_password(
-                CLAUDE_CODE_KEYCHAIN_SERVICE, macos_keychain.keychain_account_name()
-            )
-        except Exception:
-            return False  # best-effort; a down Keychain can't be cleaned now
-        return True
+        cleared = True
+        for service in _active_oauth_keychain_services():
+            try:
+                macos_keychain.delete_password(
+                    service, macos_keychain.keychain_account_name()
+                )
+            except Exception:
+                cleared = False  # best-effort; a down Keychain can't be cleaned now
+        return cleared
 
     def _write_credentials(self, credentials: str) -> None:
         """Write Claude Code's active credential, enforcing a single auth axis.
@@ -968,6 +976,19 @@ class CredentialStore:
         the plaintext file and best-effort clears any stale Keychain entry,
         recording backend ``"file"``. Linux/WSL/Windows always write the file.
 
+        The item written is the one :func:`_active_oauth_keychain_services`
+        resolves first — the item claude reads for this environment and the one
+        our own read tries first — not the fixed unsuffixed name, which under a
+        custom profile is another login altero was not asked to touch (#206).
+        Claude (2.1.282 ``QL``/``ZA``) reads and writes exactly this item: service
+        ``Claude Code-credentials[-<sha256(dir)[:8]>]``, account ``$USER``,
+        JSON payload via ``add-generic-password -U -X <hex>``, so a custom
+        profile keeps a Keychain-only posture. Seeding ``.credentials.json``
+        instead (as session profiles are seeded) would work for claude, whose
+        keychain miss falls back to that file, but would route through
+        ``_pin_file_mode`` and move this process's per-account backups to
+        ``.enc`` files.
+
         Raises:
             CredentialWriteError: If writing credentials fails.
         """
@@ -975,7 +996,7 @@ class CredentialStore:
             try:
                 self._kc_call(
                     macos_keychain.set_password,
-                    CLAUDE_CODE_KEYCHAIN_SERVICE,
+                    _active_oauth_keychain_services()[0],
                     macos_keychain.keychain_account_name(),
                     credentials,
                 )
