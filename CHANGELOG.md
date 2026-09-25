@@ -38,6 +38,10 @@ follows [Semantic Versioning](https://semver.org/).
   rotated away; a profile a switch would not adopt keeps the verdict, so
   auto-switch cannot land on the dead backup (upstream [#351](https://github.com/realiti4/claude-swap/pull/351) by
   @digitalcostas).
+- `run --share-history` no longer crashes on a non-UTF-8 `history.jsonl`, and
+  no longer splices merged history onto an unterminated last line (upstream
+  [#356](https://github.com/realiti4/claude-swap/pull/356) by
+  @BarganConstantin).
 
 ## [0.1.1] - 2026-09-25
 
