@@ -72,6 +72,10 @@ follows [Semantic Versioning](https://semver.org/).
   differ only by sub-second jitter (upstream
   [#365](https://github.com/realiti4/claude-swap/pull/365) by
   @BarganConstantin).
+- On Windows consoles that refuse VT processing, the CLI no longer prints raw
+  ANSI escape sequences (upstream
+  [#369](https://github.com/realiti4/claude-swap/pull/369) by
+  @BarganConstantin).
 
 ## [0.1.1] - 2026-09-25
 
