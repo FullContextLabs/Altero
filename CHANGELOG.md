@@ -46,6 +46,10 @@ follows [Semantic Versioning](https://semver.org/).
   flag (and, for `add-token`, its alias) when refreshing or moving the same
   account (upstream [#358](https://github.com/realiti4/claude-swap/pull/358)
   by @BarganConstantin).
+- An undecodable `.enc` backup or stash entry is treated as corrupt instead of
+  raising out of the reader (upstream
+  [#359](https://github.com/realiti4/claude-swap/pull/359) by
+  @BarganConstantin).
 
 ## [0.1.1] - 2026-09-25
 
