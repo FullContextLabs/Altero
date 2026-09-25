@@ -76,6 +76,7 @@ struct Provider: AppIntentTimelineProvider {
 struct WidgetRoot: View {
     let entry: Entry
     @Environment(\.colorScheme) private var systemScheme
+    @Environment(\.widgetRenderingMode) private var renderingMode
 
     var body: some View {
         let scheme: ColorScheme = switch entry.appearance {
@@ -84,6 +85,16 @@ struct WidgetRoot: View {
         case .dark: .dark
         }
         AlteroWidgetView(entry: entry)
+            // On macOS 26, containerBackground's Liquid Glass material is
+            // drawn following the real host appearance, not the environment
+            // this view forces below -- so a forced (or mismatched system)
+            // scheme's text could sit on a container tinted for the other
+            // one. Painting the same background inside the normal content
+            // pass, full-color only, keeps it resolving under `scheme` right
+            // alongside the text. containerBackground stays so accented and
+            // vibrant rendering -- which drop this layer along with it -- are
+            // unaffected, and so the system still has one to fall back to.
+            .background { if renderingMode == .fullColor { background } }
             .containerBackground(for: .widget) { background }
             .environment(\.colorScheme, scheme)
     }
@@ -118,3 +129,86 @@ struct AlteroWidget: Widget {
         .contentMarginsDisabled()
     }
 }
+
+// MARK: - Previews
+//
+// WidgetRoot is previewed directly (not through the `#Preview(as:)` widget
+// macro) because that macro has no way to force a colorScheme or
+// widgetRenderingMode; a plain View preview does, via .environment and
+// .previewContext(WidgetPreviewContext(family:)).
+
+#if DEBUG
+private func previewEntry() -> Entry {
+    Entry(date: .now, snapshot: nil, pageIndex: 0, appearance: .system)
+}
+
+#Preview("Large - system light - full color") {
+    WidgetRoot(entry: previewEntry())
+        .environment(\.colorScheme, .light)
+        .environment(\.widgetRenderingMode, .fullColor)
+        .previewContext(WidgetPreviewContext(family: .systemLarge))
+}
+
+#Preview("Large - system dark - full color") {
+    WidgetRoot(entry: previewEntry())
+        .environment(\.colorScheme, .dark)
+        .environment(\.widgetRenderingMode, .fullColor)
+        .previewContext(WidgetPreviewContext(family: .systemLarge))
+}
+
+#Preview("Large - system light - accented") {
+    WidgetRoot(entry: previewEntry())
+        .environment(\.colorScheme, .light)
+        .environment(\.widgetRenderingMode, .accented)
+        .previewContext(WidgetPreviewContext(family: .systemLarge))
+}
+
+#Preview("Large - system light - vibrant") {
+    WidgetRoot(entry: previewEntry())
+        .environment(\.colorScheme, .light)
+        .environment(\.widgetRenderingMode, .vibrant)
+        .previewContext(WidgetPreviewContext(family: .systemLarge))
+}
+
+#Preview("Small - system light - full color") {
+    WidgetRoot(entry: previewEntry())
+        .environment(\.colorScheme, .light)
+        .environment(\.widgetRenderingMode, .fullColor)
+        .previewContext(WidgetPreviewContext(family: .systemSmall))
+}
+
+#Preview("Small - system dark - full color") {
+    WidgetRoot(entry: previewEntry())
+        .environment(\.colorScheme, .dark)
+        .environment(\.widgetRenderingMode, .fullColor)
+        .previewContext(WidgetPreviewContext(family: .systemSmall))
+}
+
+#Preview("Medium - system light - full color") {
+    WidgetRoot(entry: previewEntry())
+        .environment(\.colorScheme, .light)
+        .environment(\.widgetRenderingMode, .fullColor)
+        .previewContext(WidgetPreviewContext(family: .systemMedium))
+}
+
+#Preview("Medium - system dark - full color") {
+    WidgetRoot(entry: previewEntry())
+        .environment(\.colorScheme, .dark)
+        .environment(\.widgetRenderingMode, .fullColor)
+        .previewContext(WidgetPreviewContext(family: .systemMedium))
+}
+
+#Preview("ExtraLarge - system light - full color") {
+    WidgetRoot(entry: previewEntry())
+        .environment(\.colorScheme, .light)
+        .environment(\.widgetRenderingMode, .fullColor)
+        .previewContext(WidgetPreviewContext(family: .systemExtraLarge))
+}
+
+#Preview("ExtraLarge - system dark - full color") {
+    WidgetRoot(entry: previewEntry())
+        .environment(\.colorScheme, .dark)
+        .environment(\.widgetRenderingMode, .fullColor)
+        .previewContext(WidgetPreviewContext(family: .systemExtraLarge))
+}
+#endif
