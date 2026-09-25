@@ -155,6 +155,30 @@ class TestServiceProgram:
         version.assert_not_called()
 
 
+class TestPlistAttribution:
+    """AssociatedBundleIdentifiers: what makes Login Items and the
+    "Background Items Added" notification name Altero instead of the signer.
+    """
+
+    def test_the_bundled_engine_is_credited_to_the_app(self, tmp_path, monkeypatch):
+        exe = _freeze(monkeypatch, tmp_path / "Applications" / "Altero.app")
+        parsed = plistlib.loads(launch_agent.build_plist([str(exe)], home=tmp_path))
+        assert parsed["AssociatedBundleIdentifiers"] == [bundle.HOST_BUNDLE_ID]
+
+    def test_a_pip_or_uv_install_has_no_app_to_credit(self, tmp_path):
+        parsed = plistlib.loads(launch_agent.build_plist(["/uv/altero"], home=tmp_path))
+        assert "AssociatedBundleIdentifiers" not in parsed
+
+    def test_a_client_deferring_to_the_pinned_engine_is_not_the_app_itself(
+        self, tmp_path
+    ):
+        # Same argv as the engine, but this process is not the frozen engine
+        # (bundle.engine_executable() is None): nothing here to attribute.
+        pinned = _executable(tmp_path / "Altero.app" / ENGINE_REL)
+        parsed = plistlib.loads(launch_agent.build_plist([str(pinned)], home=tmp_path))
+        assert "AssociatedBundleIdentifiers" not in parsed
+
+
 class TestProgramVersion:
     def test_reads_the_last_word_and_caches(self, tmp_path):
         exe = _executable(tmp_path / "altero")
