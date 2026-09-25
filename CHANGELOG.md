@@ -58,6 +58,10 @@ follows [Semantic Versioning](https://semver.org/).
   instead of a traceback (upstream
   [#366](https://github.com/realiti4/claude-swap/pull/366) by
   @BarganConstantin).
+- `export`, `import`, `remove`, `switch`, `enable` and `disable` with an empty
+  value now exit 2 with a usage error instead of silently doing nothing
+  (upstream [#367](https://github.com/realiti4/claude-swap/pull/367) by
+  @BarganConstantin).
 
 ## [0.1.1] - 2026-09-25
 
