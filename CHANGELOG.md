@@ -50,6 +50,10 @@ follows [Semantic Versioning](https://semver.org/).
   raising out of the reader (upstream
   [#359](https://github.com/realiti4/claude-swap/pull/359) by
   @BarganConstantin).
+- `add` refuses with an error instead of crashing when `.claude.json` is
+  caught mid-rewrite (upstream
+  [#362](https://github.com/realiti4/claude-swap/pull/362) by
+  @BarganConstantin).
 
 ## [0.1.1] - 2026-09-25
 
