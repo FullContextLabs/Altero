@@ -25,6 +25,10 @@ follows [Semantic Versioning](https://semver.org/).
   a relocated session profile (upstream
   [#360](https://github.com/realiti4/claude-swap/pull/360) by
   @BarganConstantin).
+- A long-running process no longer reads a residual Keychain item (the account
+  just switched away from) after an unverified file-mode fallback (upstream
+  [#361](https://github.com/realiti4/claude-swap/pull/361) by
+  @BarganConstantin).
 
 ## [0.1.1] - 2026-09-25
 
