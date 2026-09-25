@@ -21,6 +21,10 @@ follows [Semantic Versioning](https://semver.org/).
   item, the one Claude Code reads there (upstream
   [#357](https://github.com/realiti4/claude-swap/pull/357) by
   @BarganConstantin).
+- `swap` and `move` no longer leave an orphaned macOS Keychain item behind for
+  a relocated session profile (upstream
+  [#360](https://github.com/realiti4/claude-swap/pull/360) by
+  @BarganConstantin).
 
 ## [0.1.1] - 2026-09-25
 
