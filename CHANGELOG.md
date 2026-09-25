@@ -29,6 +29,10 @@ follows [Semantic Versioning](https://semver.org/).
   just switched away from) after an unverified file-mode fallback (upstream
   [#361](https://github.com/realiti4/claude-swap/pull/361) by
   @BarganConstantin).
+- Session guards now refuse when a profile's sessions directory cannot be
+  listed, instead of treating it as having no live sessions (upstream
+  [#363](https://github.com/realiti4/claude-swap/pull/363) by
+  @BarganConstantin).
 
 ## [0.1.1] - 2026-09-25
 
