@@ -68,6 +68,10 @@ follows [Semantic Versioning](https://semver.org/).
 - A malformed `accounts` map in `sequence.json` no longer crashes the
   disabled-flag lookup (upstream
   [#389](https://github.com/realiti4/claude-swap/pull/389) by @marcoabreu).
+- The lockstep-usage warning in `list` now fires when two slots' reset times
+  differ only by sub-second jitter (upstream
+  [#365](https://github.com/realiti4/claude-swap/pull/365) by
+  @BarganConstantin).
 
 ## [0.1.1] - 2026-09-25
 
