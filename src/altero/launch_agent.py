@@ -321,28 +321,34 @@ def build_plist(
     env = {"PATH": _path_env(program)}
     if version is not None:
         env["ALTERO_VERSION"] = version
-    return plistlib.dumps(
-        {
-            "Label": label,
-            "ProgramArguments": [*program, *args],
-            "RunAtLoad": True,
-            # Restart a crash, but respect a deliberate Quit. The menu bar's
-            # quit handler calls rumps.quit_application(), a clean exit(0);
-            # under a bare `KeepAlive: True` launchd would relaunch it at once
-            # and the Quit item would do nothing the user can see.
-            "KeepAlive": {"SuccessfulExit": False},
-            # A menu bar owner is a UI process; Background would have launchd
-            # apply throttled I/O and CPU bands to it.
-            "ProcessType": "Interactive",
-            # ALTERO_VERSION is read by nobody at runtime. It records which
-            # release wrote the plist, because an upgrade keeps the console
-            # script's path and so leaves ProgramArguments unchanged: without
-            # it, needs_install could not tell the running agent is old code.
-            "EnvironmentVariables": env,
-            "StandardOutPath": str(out_log),
-            "StandardErrorPath": str(err_log),
-        }
-    )
+    plist: dict[str, object] = {
+        "Label": label,
+        "ProgramArguments": [*program, *args],
+        "RunAtLoad": True,
+        # Restart a crash, but respect a deliberate Quit. The menu bar's
+        # quit handler calls rumps.quit_application(), a clean exit(0);
+        # under a bare `KeepAlive: True` launchd would relaunch it at once
+        # and the Quit item would do nothing the user can see.
+        "KeepAlive": {"SuccessfulExit": False},
+        # A menu bar owner is a UI process; Background would have launchd
+        # apply throttled I/O and CPU bands to it.
+        "ProcessType": "Interactive",
+        # ALTERO_VERSION is read by nobody at runtime. It records which
+        # release wrote the plist, because an upgrade keeps the console
+        # script's path and so leaves ProgramArguments unchanged: without
+        # it, needs_install could not tell the running agent is old code.
+        "EnvironmentVariables": env,
+        "StandardOutPath": str(out_log),
+        "StandardErrorPath": str(err_log),
+    }
+    engine = bundle.engine_executable()
+    if engine is not None and program == [str(engine)]:
+        # Without this, macOS attributes the "Background Items Added"
+        # notification and the Login Items entry to the signing developer,
+        # not Altero. Only the app's own bundled engine has an app to
+        # credit; a pip/uv install has none, so the key is left out.
+        plist["AssociatedBundleIdentifiers"] = [bundle.HOST_BUNDLE_ID]
+    return plistlib.dumps(plist)
 
 
 def _launchctl(*args: str) -> subprocess.CompletedProcess:

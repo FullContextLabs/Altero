@@ -24,6 +24,10 @@ from altero.exceptions import ClaudeSwitchError
 
 ENGINE_APP_NAME = "AlteroEngine.app"
 ENGINE_BUNDLE_ID = "com.fullcontextlabs.altero.engine"
+# The host app's own id (widget/project.yml, AlteroWidgetHost's
+# PRODUCT_BUNDLE_IDENTIFIER), not the nested engine's. This is what macOS
+# should credit a LaunchAgent to, via AssociatedBundleIdentifiers.
+HOST_BUNDLE_ID = "com.fullcontextlabs.altero"
 RELEASES_URL = "https://github.com/FullContextLabs/Altero/releases/latest"
 
 
