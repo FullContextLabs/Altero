@@ -17,8 +17,8 @@ follows [Semantic Versioning](https://semver.org/).
   (upstream [#334](https://github.com/realiti4/claude-swap/pull/334) by
   @ardabayhan).
 - On macOS under a custom `CLAUDE_CONFIG_DIR`, switching no longer overwrites
-  the default profile's Keychain login; it seeds the profile's own credentials
-  file and clears the item the read resolves (upstream
+  the default profile's Keychain login; it writes the profile's own Keychain
+  item, the one Claude Code reads there (upstream
   [#357](https://github.com/realiti4/claude-swap/pull/357) by
   @BarganConstantin).
 

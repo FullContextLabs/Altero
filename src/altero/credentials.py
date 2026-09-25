@@ -107,25 +107,6 @@ def _active_oauth_keychain_services() -> list[str]:
     return services
 
 
-def _active_store_is_the_default_secure_store() -> bool:
-    """Whether the unsuffixed Keychain item IS this environment's OAuth store.
-
-    The write may only touch ``CLAUDE_CODE_KEYCHAIN_SERVICE`` when claude
-    resolves that same item for this environment. Under any other profile that
-    item holds a login altero was not asked to touch, and the switch's outgoing
-    backup reads the ACTIVE profile — so overwriting it destroys a refresh
-    token that has no copy anywhere (#206).
-
-    Keyed on the FIRST name :func:`_active_oauth_keychain_services` resolves,
-    not on membership: an explicit ``CLAUDE_CONFIG_DIR`` naming the default
-    profile also lists the unsuffixed item, but only as the read's
-    compatibility fallback for users who never had a hashed one. Claude hashes
-    whatever is exported, so writing the unsuffixed item there lands where
-    neither claude nor our own read looks first.
-    """
-    return _active_oauth_keychain_services()[0] == CLAUDE_CODE_KEYCHAIN_SERVICE
-
-
 # Service name for per-account backup credentials now managed via the ``security``
 # CLI on macOS. Deliberately distinct from KEYRING_SERVICE so old keyring items and
 # new security items coexist during migration (safe write → verify → delete).
@@ -802,9 +783,7 @@ class CredentialStore:
         same set the read walks. The fixed name deleted the DEFAULT profile's
         login from a custom profile while leaving in place the hashed item that
         actually shadows the seed we just wrote — so claude kept serving the
-        outgoing account (#206). Deleting a hashed item is sanctioned where
-        authoring one is not: ``session.delete_macos_keychain_entry`` retires
-        one before every reseed, for this same reason.
+        outgoing account (#206).
 
         Returns whether no active item can shadow the file. ``delete_password``
         returns only on rc 0 or rc 44 (already absent) and raises otherwise, so
@@ -997,21 +976,27 @@ class CredentialStore:
         the plaintext file and best-effort clears any stale Keychain entry,
         recording backend ``"file"``. Linux/WSL/Windows always write the file.
 
-        A custom profile takes that same file path deliberately, not as a
-        fallback (#206): its Keychain item is one altero must not author — see
-        ``session``'s module docstring on why writing claude's hashed format is
-        a hard "logged out" failure when it drifts — so the switch retires the
-        stale item and seeds ``.credentials.json``, exactly as session profiles
-        are seeded, and lets claude migrate it on its first write.
+        The item written is the one :func:`_active_oauth_keychain_services`
+        resolves first — the item claude reads for this environment and the one
+        our own read tries first — not the fixed unsuffixed name, which under a
+        custom profile is another login altero was not asked to touch (#206).
+        Claude (2.1.282 ``QL``/``ZA``) reads and writes exactly this item: service
+        ``Claude Code-credentials[-<sha256(dir)[:8]>]``, account ``$USER``,
+        JSON payload via ``add-generic-password -U -X <hex>``, so a custom
+        profile keeps a Keychain-only posture. Seeding ``.credentials.json``
+        instead (as session profiles are seeded) would work for claude, whose
+        keychain miss falls back to that file, but would route through
+        ``_pin_file_mode`` and move this process's per-account backups to
+        ``.enc`` files.
 
         Raises:
             CredentialWriteError: If writing credentials fails.
         """
-        if self._use_keychain() and _active_store_is_the_default_secure_store():
+        if self._use_keychain():
             try:
                 self._kc_call(
                     macos_keychain.set_password,
-                    CLAUDE_CODE_KEYCHAIN_SERVICE,
+                    _active_oauth_keychain_services()[0],
                     macos_keychain.keychain_account_name(),
                     credentials,
                 )

@@ -12,10 +12,11 @@ custom profile. Skipping would trade a wrong answer for a missing one: claude
 writes rotations keychain-only on macOS, so a custom profile frequently has no
 plaintext file at all and would render as "no credentials" while logged in.
 
-The write side has the same split (#206) and is answered the other way round:
-altero does not author claude's hashed item, so under a custom profile it stops
-writing the unsuffixed one — which belongs to a login it was not asked to touch
-— and seeds the profile's own ``.credentials.json`` instead.
+The write side has the same split (#206) and is answered the same way: under a
+custom profile the write targets the profile's own hashed item — the one claude
+and our read resolve — and leaves the unsuffixed one, which belongs to a login
+it was not asked to touch, alone. No plaintext seed, so the process stays in
+Keychain mode for its per-account backups.
 """
 
 from __future__ import annotations
@@ -284,12 +285,11 @@ class TestActiveWriteStaysOnOneProfile:
             == DEFAULT_PROFILE_CREDS
         ), "the default profile's login was overwritten by another profile's switch"
 
-    def test_a_custom_profile_gets_a_seed_file_with_no_item_shadowing_it(
+    def test_a_custom_profile_write_lands_in_its_own_hashed_item(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, block_real_keychain
     ):
-        """Claude reads its hashed item before the seed, so leaving the profile's
-        own item in place would keep serving the outgoing account however
-        correct the seed is — the switch has to retire it and reseed."""
+        """Claude reads the profile's hashed item first, so that item is what
+        the switch replaces — in the Keychain, with no plaintext seed."""
         custom = tmp_path / "custom-profile"
         custom.mkdir()
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(custom))
@@ -302,10 +302,48 @@ class TestActiveWriteStaysOnOneProfile:
         store = CredentialStore(_Host(tmp_path / "backups"))
         store._write_credentials(TARGET_SLOT_CREDS)
 
-        seed = custom / ".credentials.json"
-        assert seed.read_text(encoding="utf-8") == TARGET_SLOT_CREDS
-        assert (hashed, account) not in block_real_keychain.data
-        assert store._last_active_credentials_backend == "file"
+        assert block_real_keychain.data[(hashed, account)] == TARGET_SLOT_CREDS
+        assert not (custom / ".credentials.json").exists()
+        assert store._last_active_credentials_backend == "keychain"
+
+    def test_a_custom_profile_write_keeps_backups_in_the_keychain(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, block_real_keychain
+    ):
+        """A long-running daemon switching inside a custom profile must not be
+        pinned to file mode, which would route every later backup to ``.enc``."""
+        custom = tmp_path / "custom-profile"
+        custom.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(custom))
+        monkeypatch.delenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", raising=False)
+
+        backups = tmp_path / "backups"
+        store = CredentialStore(_Host(backups))
+        store._write_credentials(TARGET_SLOT_CREDS)
+        store._write_account_credentials("2", "b@example.com", TARGET_SLOT_CREDS)
+
+        assert store._use_keychain()
+        assert not list(backups.glob("*.enc"))
+        assert store._read_account_credentials("2", "b@example.com") == TARGET_SLOT_CREDS
+
+    def test_secure_storage_override_write_lands_in_its_hashed_item(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, block_real_keychain
+    ):
+        """``CLAUDE_SECURESTORAGE_CONFIG_DIR`` names the store claude resolves."""
+        secure = tmp_path / "secure"
+        secure.mkdir()
+        monkeypatch.setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", str(secure))
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
+        account = macos_keychain.keychain_account_name()
+        store = CredentialStore(_Host(tmp_path / "backups"))
+        store._write_credentials(TARGET_SLOT_CREDS)
+
+        assert (
+            block_real_keychain.data[(keychain_service_name(str(secure)), account)]
+            == TARGET_SLOT_CREDS
+        )
+        assert (CLAUDE_CODE_KEYCHAIN_SERVICE, account) not in block_real_keychain.data
+        assert store._read_credentials() == TARGET_SLOT_CREDS
 
     def test_config_dir_equal_to_the_default_does_not_write_the_unsuffixed_item(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, block_real_keychain
