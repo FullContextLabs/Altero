@@ -38,6 +38,44 @@ follows [Semantic Versioning](https://semver.org/).
   rotated away; a profile a switch would not adopt keeps the verdict, so
   auto-switch cannot land on the dead backup (upstream [#351](https://github.com/realiti4/claude-swap/pull/351) by
   @digitalcostas).
+- `run --share-history` no longer crashes on a non-UTF-8 `history.jsonl`, and
+  no longer splices merged history onto an unterminated last line (upstream
+  [#356](https://github.com/realiti4/claude-swap/pull/356) by
+  @BarganConstantin).
+- `add --slot N` and `add-token --slot N` no longer drop the slot's disabled
+  flag (and, for `add-token`, its alias) when refreshing or moving the same
+  account (upstream [#358](https://github.com/realiti4/claude-swap/pull/358)
+  by @BarganConstantin).
+- An undecodable `.enc` backup or stash entry is treated as corrupt instead of
+  raising out of the reader (upstream
+  [#359](https://github.com/realiti4/claude-swap/pull/359) by
+  @BarganConstantin).
+- `add` refuses with an error instead of crashing when `.claude.json` is
+  caught mid-rewrite (upstream
+  [#362](https://github.com/realiti4/claude-swap/pull/362) by
+  @BarganConstantin).
+- `import` reports an undecrypted, directory or unreadable source as an error
+  instead of a traceback (upstream
+  [#366](https://github.com/realiti4/claude-swap/pull/366) by
+  @BarganConstantin).
+- `export`, `import`, `remove`, `switch`, `enable` and `disable` with an empty
+  value now exit 2 with a usage error instead of silently doing nothing
+  (upstream [#367](https://github.com/realiti4/claude-swap/pull/367) by
+  @BarganConstantin).
+- A quoted `"false"` for a boolean in `settings.json` is no longer read as
+  true (upstream [#368](https://github.com/realiti4/claude-swap/pull/368) by
+  @BarganConstantin).
+- A malformed `accounts` map in `sequence.json` no longer crashes the
+  disabled-flag lookup (upstream
+  [#389](https://github.com/realiti4/claude-swap/pull/389) by @marcoabreu).
+- The lockstep-usage warning in `list` now fires when two slots' reset times
+  differ only by sub-second jitter (upstream
+  [#365](https://github.com/realiti4/claude-swap/pull/365) by
+  @BarganConstantin).
+- On Windows consoles that refuse VT processing, the CLI no longer prints raw
+  ANSI escape sequences (upstream
+  [#369](https://github.com/realiti4/claude-swap/pull/369) by
+  @BarganConstantin).
 
 ## [0.1.1] - 2026-09-25
 

@@ -108,6 +108,17 @@ SETUP_TOKEN_SCOPES = ("user:inference",)
 # instant (request hygiene).
 _FETCH_STAGGER_S = 0.25
 
+# Slack allowed between two slots' reset instants before the lockstep
+# heuristic stops calling them the same window. The two slots are read by two
+# separate usage requests (see _FETCH_STAGGER_S), and the endpoint serialises
+# one shared boundary with sub-second jitter across them — issue #161 saw the
+# same 5h reset come back as ...:00.129393 and ...:00.340384, so an exact
+# comparison never fires. A few seconds covers the stagger and the latency
+# spread of a whole collect pass; it cannot merge two real accounts, whose
+# windows open when their own first request lands and would have to coincide
+# on the 5h *and* the 7d boundary to within that same slack.
+_LOCKSTEP_RESET_TOLERANCE_S = 5.0
+
 # Show a "· Xm ago" age note on displayed usage older than this. Inside the
 # serve TTL the data is current by design (that is the polling cadence), so
 # an age note there would be permanent noise.
@@ -1826,9 +1837,27 @@ class ClaudeAccountSwitcher:
 
     @staticmethod
     def _disabled_from_data(data: dict, account_num: str) -> bool:
-        """Whether a slot is flagged out of rotation in already-loaded data."""
-        record = data.get("accounts", {}).get(str(account_num))
-        return bool(record and record.get("disabled"))
+        """Whether a slot is flagged out of rotation in already-loaded data.
+
+        Total by construction. Anything the payload does not actually supply
+        — no ``accounts`` map, a map that is not a JSON object, no record for
+        this slot, a record that is not a JSON object — reads as "not
+        disabled", which is the permissive answer: the slot stays in
+        rotation and the caller carries on.
+
+        The guard was already half here (a missing record answered False via
+        ``record and``); a hand-edited or pre-schema ``sequence.json`` simply
+        took the same path with a value of the wrong type and raised a bare
+        ``AttributeError`` instead. That escapes ``ClaudeSwitchError``, so
+        ``cli.py`` renders it as a traceback and ``--json`` emits no envelope
+        at all — the failure mode ``_read_json``'s own isinstance check
+        exists to prevent one level up.
+        """
+        accounts = data.get("accounts")
+        if not isinstance(accounts, dict):
+            return False
+        record = accounts.get(str(account_num))
+        return isinstance(record, dict) and bool(record.get("disabled"))
 
     def is_account_disabled(self, account_num: str) -> bool:
         """Whether a slot is currently held out of rotation."""
@@ -3626,9 +3655,15 @@ class ClaudeAccountSwitcher:
         else:
             account_num = str(self._get_next_account_number())
 
-        # Capture any alias to carry forward before destructive cleanup below
-        # deletes the old record (same account moving slots, or refreshing in place).
+        # Capture the state the slot already holds before destructive cleanup
+        # below deletes the old record (same account moving slots, or refreshing
+        # in place). The alias and the disabled flag are settings the user put on
+        # the account, not part of the login being refreshed, so losing them here
+        # would silently return a parked account to automatic rotation. Only a
+        # record belonging to the SAME account is read: a displaced occupant's
+        # lineage ends with it, and the newcomer must not inherit its state.
         existing_alias = None
+        existing_disabled = False
         if slot is not None:
             prior = data.get("accounts", {}).get(account_num) or {}
             if (
@@ -3636,8 +3671,11 @@ class ClaudeAccountSwitcher:
                 and prior.get("organizationUuid", "") == current_org_uuid
             ):
                 existing_alias = prior.get("alias")
+                existing_disabled = bool(prior.get("disabled"))
             if migrate_from:
-                existing_alias = data["accounts"][migrate_from].get("alias") or existing_alias
+                migrated = data["accounts"][migrate_from]
+                existing_alias = migrated.get("alias") or existing_alias
+                existing_disabled = bool(migrated.get("disabled")) or existing_disabled
 
         if alias is not None:
             conflict = self._alias_in_use(alias, exclude_num=account_num)
@@ -3666,8 +3704,19 @@ class ClaudeAccountSwitcher:
         except PermissionError:
             raise ConfigError("Permission denied reading Claude config")
 
-        # Get account UUID and org fields
-        config_data = self._read_json(config_path)
+        # Get account UUID and org fields. Read strictly, because the ownership
+        # probe's network round-trip sits between the identity read this add was
+        # verified against and this one: a `.claude.json` caught mid-rewrite came
+        # back as None and the `.get` below died with a raw AttributeError, which
+        # `cli.py`'s `except ClaudeSwitchError` does not catch -- so `--json`
+        # emitted no envelope at all. Falling back to `{}` is not the answer
+        # either; it would blank the uuid and org fields of a slot whose live
+        # config carries real ones. `strict` speaks for a file that is THERE but
+        # unreadable, so None now means only that it was deleted in that same
+        # window, which is the refusal the read above already makes.
+        config_data = self._read_json(config_path, strict=True)
+        if config_data is None:
+            raise ConfigError("Claude config file not found")
         oauth_data = config_data.get("oauthAccount", {})
         account_uuid = oauth_data.get("accountUuid", "") or ""
         organization_uuid = oauth_data.get("organizationUuid", "") or ""
@@ -3714,6 +3763,8 @@ class ClaudeAccountSwitcher:
         carried_alias = alias if alias is not None else existing_alias
         if carried_alias:
             data["accounts"][account_num]["alias"] = carried_alias
+        if existing_disabled:
+            data["accounts"][account_num]["disabled"] = True
         if int(account_num) not in data["sequence"]:
             data["sequence"].append(int(account_num))
             data["sequence"].sort()
@@ -3882,6 +3933,25 @@ class ClaudeAccountSwitcher:
         else:
             account_num = str(self._get_next_account_number())
 
+        # Same carry-forward as ``add_account``, and for the same reason: a
+        # slot-pinned token account is refreshed by re-running this with --slot,
+        # which rebuilds the record wholesale, and the alias and the disabled
+        # flag belong to the account rather than to the token being replaced.
+        existing_alias = None
+        existing_disabled = False
+        if slot is not None:
+            prior = data.get("accounts", {}).get(account_num) or {}
+            if (
+                prior.get("email") == email
+                and prior.get("organizationUuid", "") == ""
+            ):
+                existing_alias = prior.get("alias")
+                existing_disabled = bool(prior.get("disabled"))
+            if migrate_from:
+                migrated = data["accounts"][migrate_from]
+                existing_alias = migrated.get("alias") or existing_alias
+                existing_disabled = bool(migrated.get("disabled")) or existing_disabled
+
         if displace_slot:
             d_num, d_email, d_org = displace_slot
             self._delete_account_files(d_num, d_email)
@@ -3919,6 +3989,10 @@ class ClaudeAccountSwitcher:
         }
         if is_api_key:
             record["kind"] = "api_key"
+        if existing_alias:
+            record["alias"] = existing_alias
+        if existing_disabled:
+            record["disabled"] = True
         data["accounts"][account_num] = record
         if int(account_num) not in data["sequence"]:
             data["sequence"].append(int(account_num))
@@ -5486,13 +5560,14 @@ class ClaudeAccountSwitcher:
         fingerprints and untouched sequence.json identities, so
         ``_duplicate_account_warnings`` cannot see them. But both tokens
         report the same account's usage: identical 5h *and* 7d percentages
-        with identical reset timestamps — the exact signal the issue's
+        with reset instants that agree to within
+        ``_LOCKSTEP_RESET_TOLERANCE_S`` — the exact signal the issue's
         reporter had to reverse-engineer by hand, automated here from data
         ``list``/watch already fetched.
 
         Heuristic, not proof: it goes quiet once the older generation dies
         and stops producing comparable usage, and only rows where both
-        windows carry a non-null ``resets_at`` are compared (two idle
+        windows carry a parseable ``resets_at`` are compared (two idle
         accounts at 0% with nothing scheduled are indistinguishable, never
         flagged; API-key slots have sentinel usage and never reach the
         comparison). Known benign false-positive source:
@@ -5500,7 +5575,7 @@ class ClaudeAccountSwitcher:
         report that account's usage — same lockstep signature, different
         cause.
         """
-        seen: dict[tuple, str] = {}
+        rows: list[tuple[str, object, float, object, float]] = []
         out: list[str] = []
         for num, _email, _org_name, _org_uuid, _is_active, _creds, _alias in accounts_info:
             snum = str(num)
@@ -5512,22 +5587,31 @@ class ClaudeAccountSwitcher:
             d7 = usage.get("seven_day")
             if not isinstance(h5, dict) or not isinstance(d7, dict):
                 continue
-            key = (
-                h5.get("pct"), h5.get("resets_at"),
-                d7.get("pct"), d7.get("resets_at"),
-            )
-            if key[1] is None or key[3] is None or key[0] is None or key[2] is None:
+            h5_pct, d7_pct = h5.get("pct"), d7.get("pct")
+            h5_ts = poll_policy.parse_reset_ts(h5.get("resets_at"))
+            d7_ts = poll_policy.parse_reset_ts(d7.get("resets_at"))
+            if h5_pct is None or d7_pct is None or h5_ts is None or d7_ts is None:
                 continue
-            other = seen.get(key)
-            if other:
-                out.append(
-                    f"Account-{other} and Account-{snum} report identical "
-                    "usage and reset times — they may be the same account. "
-                    "If it persists, log in with the missing "
-                    "account and re-add it: altero add --slot N"
-                )
-            else:
-                seen[key] = snum
+            rows.append((snum, h5_pct, h5_ts, d7_pct, d7_ts))
+        # A tolerance is not an equality, so there is no key to hash on; the
+        # comparison is pairwise over the managed slots, of which there are
+        # single digits. The break keeps a slot to a single warning when
+        # several earlier slots match it, as the keyed lookup it replaces did.
+        for i, (snum, h5_pct, h5_ts, d7_pct, d7_ts) in enumerate(rows):
+            for other, o_h5_pct, o_h5_ts, o_d7_pct, o_d7_ts in rows[:i]:
+                if (
+                    h5_pct == o_h5_pct
+                    and d7_pct == o_d7_pct
+                    and abs(h5_ts - o_h5_ts) <= _LOCKSTEP_RESET_TOLERANCE_S
+                    and abs(d7_ts - o_d7_ts) <= _LOCKSTEP_RESET_TOLERANCE_S
+                ):
+                    out.append(
+                        f"Account-{other} and Account-{snum} report identical "
+                        "usage and matching reset times — they may be the "
+                        "same account. If it persists, log in with the "
+                        "missing account and re-add it: altero add --slot N"
+                    )
+                    break
         return out
 
     def _build_list_payload(
