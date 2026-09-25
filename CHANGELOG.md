@@ -16,6 +16,11 @@ follows [Semantic Versioning](https://semver.org/).
   credential of the same account, including via the foreign-owner write path
   (upstream [#334](https://github.com/realiti4/claude-swap/pull/334) by
   @ardabayhan).
+- On macOS under a custom `CLAUDE_CONFIG_DIR`, switching no longer overwrites
+  the default profile's Keychain login; it seeds the profile's own credentials
+  file and clears the item the read resolves (upstream
+  [#357](https://github.com/realiti4/claude-swap/pull/357) by
+  @BarganConstantin).
 
 ## [0.1.1] - 2026-09-25
 
