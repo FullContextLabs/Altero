@@ -42,6 +42,10 @@ follows [Semantic Versioning](https://semver.org/).
   no longer splices merged history onto an unterminated last line (upstream
   [#356](https://github.com/realiti4/claude-swap/pull/356) by
   @BarganConstantin).
+- `add --slot N` and `add-token --slot N` no longer drop the slot's disabled
+  flag (and, for `add-token`, its alias) when refreshing or moving the same
+  account (upstream [#358](https://github.com/realiti4/claude-swap/pull/358)
+  by @BarganConstantin).
 
 ## [0.1.1] - 2026-09-25
 
