@@ -62,6 +62,9 @@ follows [Semantic Versioning](https://semver.org/).
   value now exit 2 with a usage error instead of silently doing nothing
   (upstream [#367](https://github.com/realiti4/claude-swap/pull/367) by
   @BarganConstantin).
+- A quoted `"false"` for a boolean in `settings.json` is no longer read as
+  true (upstream [#368](https://github.com/realiti4/claude-swap/pull/368) by
+  @BarganConstantin).
 
 ## [0.1.1] - 2026-09-25
 
