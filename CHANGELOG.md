@@ -54,6 +54,10 @@ follows [Semantic Versioning](https://semver.org/).
   caught mid-rewrite (upstream
   [#362](https://github.com/realiti4/claude-swap/pull/362) by
   @BarganConstantin).
+- `import` reports an undecrypted, directory or unreadable source as an error
+  instead of a traceback (upstream
+  [#366](https://github.com/realiti4/claude-swap/pull/366) by
+  @BarganConstantin).
 
 ## [0.1.1] - 2026-09-25
 
