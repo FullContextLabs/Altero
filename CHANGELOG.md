@@ -12,6 +12,10 @@ follows [Semantic Versioning](https://semver.org/).
   mcpOAuth-only leftover) over a slot's OAuth backup, and a newer foreign
   login is saved into its owning slot instead of only being stashed (upstream
   [#384](https://github.com/realiti4/claude-swap/pull/384) by @NorthIsUp).
+- Switching no longer reverts a slot's newer re-login to a stale live
+  credential of the same account, including via the foreign-owner write path
+  (upstream [#334](https://github.com/realiti4/claude-swap/pull/334) by
+  @ardabayhan).
 
 ## [0.1.1] - 2026-09-25
 
