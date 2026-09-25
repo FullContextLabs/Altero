@@ -44,15 +44,21 @@ If you also have a uv or pip install, the app's engine owns the background servi
 
 ### CLI with uv or pipx (macOS, Windows, Linux)
 
-Altero is not on PyPI yet. Install it from GitHub with [uv](https://docs.astral.sh/uv/) (Python 3.12+):
+Install with [uv](https://docs.astral.sh/uv/) (Python 3.12+):
+
+```bash
+uv tool install altero
+# macOS, with the menu bar:
+uv tool install 'altero[menubar]'
+```
+
+`pipx install altero` works the same way. `altero upgrade` upgrades a uv or pipx install.
+
+From GitHub, for an unreleased commit:
 
 ```bash
 uv tool install 'git+https://github.com/FullContextLabs/Altero'
-# macOS, with the menu bar:
-uv tool install 'altero[menubar] @ git+https://github.com/FullContextLabs/Altero'
 ```
-
-`pipx install` accepts the same specs. `altero upgrade` upgrades a uv or pipx install.
 
 From source:
 

@@ -24,10 +24,10 @@ APP_UPGRADE_HINT = (
     f"Download the new Altero.app from {bundle.RELEASES_URL}, quit Altero from "
     "its menu bar, and replace the app in Applications."
 )
-# Off until `altero` is published to PyPI under our control: before that, any
-# release someone else uploaded under the name would be announced here, and
-# `altero upgrade` would install it. Flip to True with the first release.
-PUBLISHED_ON_PYPI = False
+# On since the 0.1.0 release: `altero` is published to PyPI under our
+# control, so a newer release there is safe to announce here, and
+# `altero upgrade` installs it.
+PUBLISHED_ON_PYPI = True
 
 _VERSION_RE = re.compile(
     r"(\d+(?:\.\d+)*)(?:[-_.]?(alpha|beta|preview|pre|rc|a|b|c)[-_.]?(\d+)?)?",
