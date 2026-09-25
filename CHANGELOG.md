@@ -33,6 +33,10 @@ follows [Semantic Versioning](https://semver.org/).
   listed, instead of treating it as having no live sessions (upstream
   [#363](https://github.com/realiti4/claude-swap/pull/363) by
   @BarganConstantin).
+- A slot whose session profile holds a live token family is no longer reported
+  as "re-login needed" because its stored backup's refresh token was rotated
+  away (upstream [#351](https://github.com/realiti4/claude-swap/pull/351) by
+  @digitalcostas).
 
 ## [0.1.1] - 2026-09-25
 
