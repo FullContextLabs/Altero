@@ -1,6 +1,6 @@
 [project]
 name = "altero"
-version = "0.1.0"
+version = "0.1.1"
 description = "Altero for Claude Code: switch Claude Code accounts when usage limits run out"
 readme = "README.md"
 requires-python = ">=3.12"

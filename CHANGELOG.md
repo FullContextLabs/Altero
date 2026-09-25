@@ -6,6 +6,8 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-25
+
 ### Fixed
 
 - Login Items and the background-items notification now name Altero instead
