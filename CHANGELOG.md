@@ -65,6 +65,9 @@ follows [Semantic Versioning](https://semver.org/).
 - A quoted `"false"` for a boolean in `settings.json` is no longer read as
   true (upstream [#368](https://github.com/realiti4/claude-swap/pull/368) by
   @BarganConstantin).
+- A malformed `accounts` map in `sequence.json` no longer crashes the
+  disabled-flag lookup (upstream
+  [#389](https://github.com/realiti4/claude-swap/pull/389) by @marcoabreu).
 
 ## [0.1.1] - 2026-09-25
 
