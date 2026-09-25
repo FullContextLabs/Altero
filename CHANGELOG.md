@@ -6,6 +6,13 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Switching no longer backs up an OAuth-less live store (API key or
+  mcpOAuth-only leftover) over a slot's OAuth backup, and a newer foreign
+  login is saved into its owning slot instead of only being stashed (upstream
+  [#384](https://github.com/realiti4/claude-swap/pull/384) by @NorthIsUp).
+
 ## [0.1.1] - 2026-09-25
 
 ### Fixed
