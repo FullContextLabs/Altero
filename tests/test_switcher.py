@@ -4365,6 +4365,60 @@ class TestDeadTokenQuarantine:
         assert entries["2"].sentinel == USAGE_RELOGIN_REQUIRED
         run.assert_not_called()
 
+    def test_stale_marked_session_profile_keeps_relogin_required(
+        self, temp_home
+    ):
+        # A stale-marked profile is never adopted into the backup, so the
+        # switch would activate the dead backup: lifting the quarantine here
+        # would make the slot an auto-switch candidate onto a dead credential.
+        from altero.json_output import USAGE_RELOGIN_REQUIRED
+        switcher = ClaudeAccountSwitcher()
+        switcher._setup_directories()
+        self._make_dead(switcher)
+        info = [(2, "test@example.com", "Org", "", False, self._dead_creds(), "")]
+
+        with patch(
+            "altero.session.read_session_credentials",
+            return_value=self._session_creds(),
+        ), patch(
+            "altero.session.session_identity_drifted", return_value=False
+        ), patch(
+            "altero.session.is_session_stale", return_value=True
+        ), patch.object(
+            switcher, "_run_usage_fetches"
+        ) as run:
+            entries = switcher._collect_usage_entries(info)
+
+        assert entries["2"].sentinel == USAGE_RELOGIN_REQUIRED
+        run.assert_not_called()
+
+    def test_session_profile_on_the_dead_generation_keeps_relogin_required(
+        self, temp_home
+    ):
+        # The profile holds the very credential the backup does: nothing
+        # newer exists to adopt, and its refresh token is the dead one.
+        from altero.json_output import USAGE_RELOGIN_REQUIRED
+        switcher = ClaudeAccountSwitcher()
+        switcher._setup_directories()
+        same = self._session_creds()
+        switcher._write_account_credentials("2", "test@example.com", same)
+        self._make_dead(switcher)
+        info = [(2, "test@example.com", "Org", "", False, same, "")]
+
+        with patch(
+            "altero.session.read_session_credentials", return_value=same
+        ), patch(
+            "altero.session.session_identity_drifted", return_value=False
+        ), patch.object(
+            switcher, "_entry_token_dead", return_value=True
+        ), patch.object(
+            switcher, "_run_usage_fetches"
+        ) as run:
+            entries = switcher._collect_usage_entries(info)
+
+        assert entries["2"].sentinel == USAGE_RELOGIN_REQUIRED
+        run.assert_not_called()
+
     def test_the_collector_hands_the_trust_bound_its_configured_models(
         self, temp_home
     ):

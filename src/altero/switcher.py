@@ -4916,17 +4916,16 @@ class ClaudeAccountSwitcher:
         lineage. Returns ``None`` when there is no usable profile credential
         (absent, no refresh token, or drifted to a different account) — the
         backup's dead verdict stands.
-        """
-        from altero.session import (
-            read_session_credentials,
-            session_identity_drifted,
-        )
 
-        session_dir = self._session_dir(num, email)
-        session_creds = read_session_credentials(session_dir)
+        Only a profile :meth:`_session_profile_ahead` accepts counts: that is
+        the same test every adoption site applies before the backup is
+        replaced (the collector's idle fetch, the consume gate,
+        ``_perform_switch``). A profile it rejects — stale-marked, on the
+        backup's own generation, or behind it — is never adopted, so lifting
+        the quarantine on it would let auto-switch activate the dead backup.
+        """
+        session_creds = self._session_profile_ahead(num, email, org_uuid)
         if not session_creds:
-            return None
-        if session_identity_drifted(session_dir, email, org_uuid):
             return None
         data = oauth.extract_oauth_data(session_creds)
         if not data or not data.get("refreshToken"):
