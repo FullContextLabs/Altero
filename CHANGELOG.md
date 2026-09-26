@@ -14,7 +14,11 @@ follows [Semantic Versioning](https://semver.org/).
   widget now also paints its tint inside the content in full-color rendering,
   under the same forced or system color scheme as the text, instead of
   relying solely on `containerBackground`'s Liquid Glass material, which on
-  macOS 26 follows the host appearance rather than the widget's own.
+  macOS 26 follows the host appearance rather than the widget's own. The tint
+  is a concrete color picked from that scheme, so the widget gallery's
+  preview stays legible after the system appearance changes.
+- `packaging/install-app` restarts a running widget extension after swapping
+  the app, so the widget stops serving the previous build's code.
 - Switching no longer backs up an OAuth-less live store (API key or
   mcpOAuth-only leftover) over a slot's OAuth backup, and a newer foreign
   login is saved into its owning slot instead of only being stashed (upstream
