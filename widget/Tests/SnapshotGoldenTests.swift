@@ -43,6 +43,18 @@ final class SnapshotGoldenTests: XCTestCase {
         XCTAssertEqual(snapshot.accounts.map(\.number), [1, 2, 3, 4])
     }
 
+    /// The widget gallery's sample: every instant moves with `takenAt`, so the
+    /// resets stay the same distance ahead of now.
+    func testDecodeShiftedToNow() throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "snapshot_golden", withExtension: "json"))
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let shifted = try Snapshot.decode(Data(contentsOf: url), takenAt: now)
+        XCTAssertEqual(shifted.takenAt, now)
+        let original = try XCTUnwrap(snapshot.accounts[0].usage?.fiveHour?.resetsAt)
+        let moved = try XCTUnwrap(shifted.accounts[0].usage?.fiveHour?.resetsAt)
+        XCTAssertEqual(moved.timeIntervalSince(now), original.timeIntervalSince(snapshot.takenAt), accuracy: 0.001)
+    }
+
     // MARK: - Account 1: pace present, spend, alias, active
 
     func testAccountOne() throws {

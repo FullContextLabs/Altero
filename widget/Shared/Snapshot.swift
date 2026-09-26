@@ -17,10 +17,18 @@ struct Snapshot: Decodable, Sendable {
     let autoswitch: AutoSwitch?
 
     static func decode(_ data: Data) throws -> Snapshot {
-        try decoder.decode(Snapshot.self, from: data)
+        try decoder().decode(Snapshot.self, from: data)
     }
 
-    private static var decoder: JSONDecoder {
+    /// `data` with every instant moved by the same amount so `takenAt` is
+    /// `now`: a fixed document (the widget gallery's sample) that reads as
+    /// current, its resets still ahead.
+    static func decode(_ data: Data, takenAt now: Date) throws -> Snapshot {
+        let offset = now.timeIntervalSince(try decode(data).takenAt)
+        return try decoder(shiftingBy: offset).decode(Snapshot.self, from: data)
+    }
+
+    private static func decoder(shiftingBy offset: TimeInterval = 0) -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
             let text = try decoder.singleValueContainer().decode(String.self)
@@ -30,7 +38,7 @@ struct Snapshot: Decodable, Sendable {
                           debugDescription: "not an ISO-8601 instant: \(text)")
                 )
             }
-            return date
+            return date.addingTimeInterval(offset)
         }
         return decoder
     }

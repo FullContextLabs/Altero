@@ -17,6 +17,9 @@ follows [Semantic Versioning](https://semver.org/).
   macOS 26 follows the host appearance rather than the widget's own. The tint
   is a concrete color picked from that scheme, so the widget gallery's
   preview stays legible after the system appearance changes.
+- The widget gallery shows sample usage (example.com accounts) instead of a
+  blank card, and never the user's own accounts; the loading placeholder
+  draws the same sample, redacted.
 - `packaging/install-app` restarts a running widget extension after swapping
   the app, so the widget stops serving the previous build's code.
 - Switching no longer backs up an OAuth-less live store (API key or
