@@ -345,6 +345,9 @@ class TestColourEnvDoesNotLeakIntoTests:
         """
         monkeypatch.setenv("TERM", "xterm-256color")
         monkeypatch.setattr(sys.stdout, "isatty", lambda: True, raising=False)
+        # On win32 detection also asks the console to take VT mode; a captured
+        # CI stdout has no console, so pin that step like isatty().
+        monkeypatch.setattr(printer, "_enable_windows_vt", lambda: True)
         assert printer.colors_enabled() is True
 
 
