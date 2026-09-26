@@ -109,10 +109,6 @@ targets:
       # The snapshot model is shared verbatim with the test target rather than
       # linked through a framework: two sources entries beat a third product.
       - path: Shared
-      # The widget gallery's sample data: the same golden fixture the tests
-      # decode, so the sample always matches the schema.
-      - path: ../tests/fixtures/snapshot_golden.json
-        buildPhase: resources
     settings:
       base:
         # Must stay prefixed by the host's bundle id.

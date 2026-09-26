@@ -21,24 +21,12 @@ struct Entry: TimelineEntry {
 }
 
 struct Provider: AppIntentTimelineProvider {
-    // The gallery (and the redacted placeholder) draw the sample, never the
-    // user's own accounts: a snapshot file may be missing, and if present it
-    // holds real account names.
     func placeholder(in context: Context) -> Entry {
-        Entry(date: .now, snapshot: Self.sample(), pageIndex: 0, appearance: .system)
+        Entry(date: .now, snapshot: nil, pageIndex: 0, appearance: .system)
     }
 
     func snapshot(for configuration: AlteroConfigIntent, in context: Context) async -> Entry {
-        guard context.isPreview else { return entry(configuration, context) }
-        return Entry(date: .now, snapshot: Self.sample(), pageIndex: 0, appearance: configuration.appearance)
-    }
-
-    /// The Python producer's golden fixture (example.com accounts), bundled
-    /// as a resource and moved to now.
-    private static func sample() -> Snapshot? {
-        guard let url = Bundle.main.url(forResource: "snapshot_golden", withExtension: "json"),
-              let data = try? Data(contentsOf: url) else { return nil }
-        return try? Snapshot.decode(data, takenAt: .now)
+        entry(configuration, context)
     }
 
     func timeline(for configuration: AlteroConfigIntent, in context: Context) async -> Timeline<Entry> {
