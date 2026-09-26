@@ -76,6 +76,7 @@ struct Provider: AppIntentTimelineProvider {
 struct WidgetRoot: View {
     let entry: Entry
     @Environment(\.colorScheme) private var systemScheme
+    @Environment(\.widgetRenderingMode) private var renderingMode
 
     var body: some View {
         let scheme: ColorScheme = switch entry.appearance {
@@ -84,7 +85,17 @@ struct WidgetRoot: View {
         case .dark: .dark
         }
         AlteroWidgetView(entry: entry)
-            .containerBackground(for: .widget) { background }
+            // On macOS 26, containerBackground's Liquid Glass material is
+            // drawn following the real host appearance, not the environment
+            // this view forces below -- so a forced (or mismatched system)
+            // scheme's text could sit on a container tinted for the other
+            // one. Painting the same background inside the normal content
+            // pass, full-color only, keeps it resolving under `scheme` right
+            // alongside the text. containerBackground stays so accented and
+            // vibrant rendering -- which drop this layer along with it -- are
+            // unaffected, and so the system still has one to fall back to.
+            .background { if renderingMode == .fullColor { background(scheme) } }
+            .containerBackground(for: .widget) { background(scheme) }
             .environment(\.colorScheme, scheme)
     }
 
@@ -94,12 +105,31 @@ struct WidgetRoot: View {
     /// container background, so those modes are unaffected.
     /// Forced modes: the glass still follows the system appearance, so they
     /// lay their own light/dark tint over it to keep the forced text legible.
-    @ViewBuilder private var background: some View {
+    /// Every case is a concrete color picked from `scheme`, never a semantic
+    /// style: the semantic `.background` is archived unresolved and resolved
+    /// by the host at display time, so a render kept around past an
+    /// appearance change (the widget gallery's preview) paired text drawn
+    /// for one scheme with a background drawn for the other.
+    private func background(_ scheme: ColorScheme) -> Color {
         switch entry.appearance {
-        case .system: Rectangle().fill(.background.opacity(0.88))
+        case .system: (scheme == .dark ? Self.darkWindow : Self.lightWindow).opacity(0.88)
         case .light: Color.white.opacity(0.88)
         case .dark: Color(white: 0.11).opacity(0.88)
         }
+    }
+
+    /// The window background color, resolved once per appearance.
+    private static let lightWindow = windowBackground(.aqua)
+    private static let darkWindow = windowBackground(.darkAqua)
+
+    private static func windowBackground(_ name: NSAppearance.Name) -> Color {
+        var color = name == .darkAqua ? Color(white: 0.11) : .white
+        NSAppearance(named: name)?.performAsCurrentDrawingAppearance {
+            if let rgb = NSColor.windowBackgroundColor.usingColorSpace(.sRGB) {
+                color = Color(.sRGB, red: rgb.redComponent, green: rgb.greenComponent, blue: rgb.blueComponent)
+            }
+        }
+        return color
     }
 }
 
@@ -118,3 +148,86 @@ struct AlteroWidget: Widget {
         .contentMarginsDisabled()
     }
 }
+
+// MARK: - Previews
+//
+// WidgetRoot is previewed directly (not through the `#Preview(as:)` widget
+// macro) because that macro has no way to force a colorScheme or
+// widgetRenderingMode; a plain View preview does, via .environment, framed
+// at the macOS widget sizes (#Preview ignores .previewContext).
+
+#if DEBUG
+private func previewEntry() -> Entry {
+    Entry(date: .now, snapshot: nil, pageIndex: 0, appearance: .system)
+}
+
+#Preview("Large - system light - full color") {
+    WidgetRoot(entry: previewEntry())
+        .environment(\.colorScheme, .light)
+        .environment(\.widgetRenderingMode, .fullColor)
+        .frame(width: 364, height: 382)
+}
+
+#Preview("Large - system dark - full color") {
+    WidgetRoot(entry: previewEntry())
+        .environment(\.colorScheme, .dark)
+        .environment(\.widgetRenderingMode, .fullColor)
+        .frame(width: 364, height: 382)
+}
+
+#Preview("Large - system light - accented") {
+    WidgetRoot(entry: previewEntry())
+        .environment(\.colorScheme, .light)
+        .environment(\.widgetRenderingMode, .accented)
+        .frame(width: 364, height: 382)
+}
+
+#Preview("Large - system light - vibrant") {
+    WidgetRoot(entry: previewEntry())
+        .environment(\.colorScheme, .light)
+        .environment(\.widgetRenderingMode, .vibrant)
+        .frame(width: 364, height: 382)
+}
+
+#Preview("Small - system light - full color") {
+    WidgetRoot(entry: previewEntry())
+        .environment(\.colorScheme, .light)
+        .environment(\.widgetRenderingMode, .fullColor)
+        .frame(width: 170, height: 170)
+}
+
+#Preview("Small - system dark - full color") {
+    WidgetRoot(entry: previewEntry())
+        .environment(\.colorScheme, .dark)
+        .environment(\.widgetRenderingMode, .fullColor)
+        .frame(width: 170, height: 170)
+}
+
+#Preview("Medium - system light - full color") {
+    WidgetRoot(entry: previewEntry())
+        .environment(\.colorScheme, .light)
+        .environment(\.widgetRenderingMode, .fullColor)
+        .frame(width: 364, height: 170)
+}
+
+#Preview("Medium - system dark - full color") {
+    WidgetRoot(entry: previewEntry())
+        .environment(\.colorScheme, .dark)
+        .environment(\.widgetRenderingMode, .fullColor)
+        .frame(width: 364, height: 170)
+}
+
+#Preview("ExtraLarge - system light - full color") {
+    WidgetRoot(entry: previewEntry())
+        .environment(\.colorScheme, .light)
+        .environment(\.widgetRenderingMode, .fullColor)
+        .frame(width: 758, height: 382)
+}
+
+#Preview("ExtraLarge - system dark - full color") {
+    WidgetRoot(entry: previewEntry())
+        .environment(\.colorScheme, .dark)
+        .environment(\.widgetRenderingMode, .fullColor)
+        .frame(width: 758, height: 382)
+}
+#endif
