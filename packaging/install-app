@@ -73,6 +73,10 @@ fi
 [[ -n "$previous" ]] && rm -rf "$previous"
 echo "Installed $DEST ($("$DEST/$ENGINE_REL" --version))."
 
+# A running widget extension keeps serving the replaced app's code; chronod
+# relaunches it from the new bundle on the next render.
+if pkill -f "$DEST/Contents/PlugIns/AlteroWidgetExtension.appex/"; then echo "Restarted the widget extension."; fi
+
 # `altero menubar` ensures the backend too; `service start` alone is for a
 # backend that was running without the menu bar (a placed widget keeps it).
 if (( stopped_menubar )); then
