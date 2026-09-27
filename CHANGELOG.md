@@ -87,6 +87,8 @@ follows [Semantic Versioning](https://semver.org/).
   ANSI escape sequences (upstream
   [#369](https://github.com/realiti4/claude-swap/pull/369) by
   @BarganConstantin).
+- Widget gallery shows a redacted sample layout instead of an empty card while
+  macOS renders the preview.
 
 ## [0.1.1] - 2026-09-25
 
