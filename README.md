@@ -33,7 +33,11 @@ One app with everything: the CLI, the TUI, the menu bar, the background engine a
 1. Download `Altero-<version>.dmg` from [Releases](https://github.com/FullContextLabs/Altero/releases/latest).
 2. Open it and drag **Altero** into **Applications**.
 3. Open Altero from Applications. The menu bar icon appears, and macOS notes that Altero added background items (the menu bar and the auto-switch engine, which start at login).
-4. For the `altero` command in a terminal, choose **Install Command Line Tool…** from the menu bar. It links `~/.local/bin/altero` to the app; if another `altero` (a uv or pip install) is already there, it is left alone and the menu shows the alternative.
+4. For the `altero` command in a terminal, accept the offer Altero makes on first launch, or choose **Install Command Line Tool…** from the menu bar later. It links `/usr/local/bin/altero` to the app, and macOS may ask for your administrator password to do so. If you cancel that prompt, it links `~/.local/bin/altero` instead and adds `~/.local/bin` to your PATH in `~/.zprofile`; open a new terminal afterwards. If another `altero` (a uv or pip install) is already there, it is left alone. To link it by hand:
+
+   ```bash
+   sudo ln -sf /Applications/Altero.app/Contents/Helpers/AlteroEngine.app/Contents/MacOS/altero /usr/local/bin/altero
+   ```
 5. For the widget: right-click the desktop, **Edit Widgets**, and look for **Altero**.
 
 Altero refuses to start from the disk image or the Downloads folder, because its login services would point at a path that is gone at the next login. Move it to Applications first.

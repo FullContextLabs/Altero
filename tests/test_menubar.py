@@ -103,6 +103,7 @@ def test_settings_round_trip(tmp_path: Path):
         show_account_name=False,
         title_pct="5h",
         refresh_interval=300,
+        cli_offer_shown=True,
     )
     original.save(path)
     loaded = menubar.MenuBarSettings.load(path)

@@ -141,6 +141,7 @@ class MenuBarSettings:
     title_scoped: bool = False  # append per-model weekly limits (e.g. Fable) to the title
     title_reset_countdown: bool = False  # append each title percentage's time to reset
     refresh_interval: int = 60
+    cli_offer_shown: bool = False  # the one-time "Install Command Line Tool" prompt
 
     @classmethod
     def load(cls, path: Path) -> "MenuBarSettings":
@@ -683,6 +684,15 @@ def run(switcher) -> int:
             # Set while the backend owns the engine: its events arrive through
             # its log instead of an in-process callback.
             self._backend_log = None
+            # Offered once, from the first sync tick: an alert here would
+            # block before the run loop (and the status item) exists.
+            engine = bundle.engine_executable()
+            self._offer_cli = (
+                not self.settings.cli_offer_shown
+                and engine is not None
+                and bundle.relocation_problem(engine) is None
+                and not bundle.cli_tool_installed()
+            )
             self.rebuild_menu()
             # Background display refresh on the user's interval, plus a fast
             # UI-sync tick that applies snapshots + engine events on the main thread.
@@ -757,6 +767,22 @@ def run(switcher) -> int:
                 self._retitle()
             self._detect_state_change()
             self._drain_engine_events()
+            if self._offer_cli:
+                self._offer_cli = False
+                self._offer_cli_tool()
+
+        def _offer_cli_tool(self):
+            self.settings.cli_offer_shown = True
+            self.settings.save(settings_path)
+            if rumps.alert(
+                title="Install Command Line Tool",
+                message="Install the `altero` command for use in a terminal? "
+                        "macOS may ask for your password. You can do this later "
+                        "from the menu.",
+                ok="Install",
+                cancel="Not Now",
+            ) == 1:  # 1 == OK
+                self.on_install_cli(None)
 
         def _detect_state_change(self):
             # Reflect a change made anywhere -- this menu, `altero switch` or
