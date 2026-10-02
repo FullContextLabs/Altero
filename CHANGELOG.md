@@ -6,6 +6,18 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-02
+
+### Fixed
+
+- The `altero` command is on PATH after installing from the DMG. **Install
+  Command Line Tool…** now links `/usr/local/bin/altero`, asking for an
+  administrator password when that directory is not writable; if the prompt is
+  cancelled, it links `~/.local/bin/altero` and adds that directory to PATH in
+  `~/.zprofile`. The menu bar offers the install once on first launch. An
+  existing link that points elsewhere is left untouched
+  ([#16](https://github.com/FullContextLabs/Altero/pull/16)).
+
 ## [0.1.2] - 2026-09-25
 
 ### Fixed
