@@ -30,6 +30,8 @@ On macOS the auto-switch engine runs as a per-user LaunchAgent that the TUI and 
 
 One app with everything: the CLI, the TUI, the menu bar, the background engine and the widget. Apple silicon, macOS 14 or later.
 
+With [Homebrew](https://brew.sh), `brew install fullcontextlabs/tap/altero` installs the app and puts `altero` on your PATH. Upgrade with `brew upgrade --cask altero`. Otherwise:
+
 1. Download `Altero-<version>.dmg` from [Releases](https://github.com/FullContextLabs/Altero/releases/latest).
 2. Open it and drag **Altero** into **Applications**.
 3. Open Altero from Applications. The menu bar icon appears, and macOS notes that Altero added background items (the menu bar and the auto-switch engine, which start at login).
@@ -42,7 +44,7 @@ One app with everything: the CLI, the TUI, the menu bar, the background engine a
 
 Altero refuses to start from the disk image or the Downloads folder, because its login services would point at a path that is gone at the next login. Move it to Applications first.
 
-To upgrade, quit Altero from its menu bar, replace the app in Applications with the new one, and open it again. A Homebrew cask is coming.
+To upgrade, quit Altero from its menu bar, replace the app in Applications with the new one, and open it again.
 
 If you also have a uv or pip install, the app's engine owns the background services and the other `altero` uses them instead of replacing them. `altero config unset service.program` hands them back until the app is opened again.
 
