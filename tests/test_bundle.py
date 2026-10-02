@@ -323,38 +323,127 @@ class TestAppUpdates:
 
 
 class TestInstallCliTool:
-    def test_links_the_engine_into_local_bin(self, tmp_path, monkeypatch):
+    """``/usr/local/bin`` is a tmp dir, osascript is a mock, ``home`` is tmp."""
+
+    @pytest.fixture(autouse=True)
+    def system_bin(self, tmp_path, monkeypatch):
+        system_bin = tmp_path / "usr-local-bin"
+        system_bin.mkdir()
+        monkeypatch.setattr(bundle, "SYSTEM_BIN", system_bin)
+        return system_bin
+
+    @pytest.fixture
+    def read_only(self, system_bin, monkeypatch):
+        real_access = os.access
+        monkeypatch.setattr(
+            bundle.os, "access",
+            lambda p, mode: False if Path(p) == system_bin else real_access(p, mode),
+        )
+
+    def test_links_the_engine_into_a_writable_usr_local_bin(self, tmp_path, monkeypatch, system_bin):
         exe = _freeze(monkeypatch, tmp_path / "Applications" / "Altero.app")
-        message = bundle.install_cli_tool(home=tmp_path)
+        with patch.object(bundle.subprocess, "run") as run:
+            message = bundle.install_cli_tool(home=tmp_path)
+            assert "already installed" in bundle.install_cli_tool(home=tmp_path)
+        run.assert_not_called()
+        assert os.readlink(system_bin / "altero") == str(exe)
+        assert str(system_bin / "altero") in message
+        assert bundle.cli_tool_installed(home=tmp_path)
+        assert not (tmp_path / ".zprofile").exists()
+
+    def test_asks_for_admin_when_usr_local_bin_is_not_writable(
+        self, tmp_path, monkeypatch, system_bin, read_only
+    ):
+        exe = _freeze(monkeypatch, tmp_path / "Applications" / "Altero.app")
+        ok = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with patch.object(bundle.subprocess, "run", return_value=ok) as run:
+            message = bundle.install_cli_tool(home=tmp_path)
+        argv = run.call_args.args[0]
+        assert argv[:2] == ["osascript", "-e"]
+        assert "with administrator privileges" in argv[2]
+        assert f"ln -sfh {exe} {system_bin / 'altero'}" in argv[2]
+        assert str(system_bin / "altero") in message
+        assert not (tmp_path / ".local" / "bin" / "altero").exists()
+
+    def test_admin_command_quotes_the_path(self, tmp_path, monkeypatch, read_only):
+        _freeze(monkeypatch, tmp_path / "Apps \"x\" 'y'" / "Altero.app")
+        ok = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with patch.object(bundle.subprocess, "run", return_value=ok) as run:
+            bundle.install_cli_tool(home=tmp_path)
+        script = run.call_args.args[0][2]
+        # Every " inside the AppleScript string literal is escaped.
+        body = script.removeprefix('do shell script "').removesuffix('" with administrator privileges')
+        assert '"' not in body.replace('\\"', "")
+
+    def test_cancelled_admin_prompt_falls_back_to_local_bin(
+        self, tmp_path, monkeypatch, system_bin, read_only
+    ):
+        exe = _freeze(monkeypatch, tmp_path / "Applications" / "Altero.app")
+        cancelled = subprocess.CompletedProcess(
+            [], 1, stdout="", stderr="execution error: User canceled. (-128)"
+        )
+        zprofile = tmp_path / ".zprofile"
+        zprofile.write_text("eval something")
+        with patch.object(bundle.subprocess, "run", return_value=cancelled):
+            message = bundle.install_cli_tool(home=tmp_path)
+            again = bundle.install_cli_tool(home=tmp_path)
         link = tmp_path / ".local" / "bin" / "altero"
         assert os.readlink(link) == str(exe)
-        assert str(link) in message and "/usr/local/bin" in message
-        assert "already installed" in bundle.install_cli_tool(home=tmp_path)
+        assert not (system_bin / "altero").exists()
+        assert "new terminal" in message and str(link) in message
+        assert "new terminal" in again
+        assert zprofile.read_text() == (
+            "eval something\n# added by Altero\n" + bundle.ZPROFILE_PATH_LINE + "\n"
+        )
+        assert bundle.cli_tool_installed(home=tmp_path)
 
-    def test_never_replaces_someone_elses_altero(self, tmp_path, monkeypatch):
+    def test_never_replaces_someone_elses_altero(self, tmp_path, monkeypatch, system_bin):
         _freeze(monkeypatch, tmp_path / "Applications" / "Altero.app")
         uv_tool = _executable(tmp_path / "uv" / "tools" / "altero" / "bin" / "altero")
-        link = tmp_path / ".local" / "bin" / "altero"
-        link.parent.mkdir(parents=True)
+        link = system_bin / "altero"
         link.symlink_to(uv_tool)
-        with pytest.raises(ClaudeSwitchError, match="left alone"):
+        with patch.object(bundle.subprocess, "run") as run, \
+                pytest.raises(ClaudeSwitchError, match="left alone"):
             bundle.install_cli_tool(home=tmp_path)
+        run.assert_not_called()
         assert os.readlink(link) == str(uv_tool)
+        assert not bundle.cli_tool_installed(home=tmp_path)
 
-    def test_replaces_a_dangling_link(self, tmp_path, monkeypatch):
+    def test_never_replaces_someone_elses_altero_in_the_fallback(
+        self, tmp_path, monkeypatch, read_only
+    ):
+        _freeze(monkeypatch, tmp_path / "Applications" / "Altero.app")
+        link = _executable(tmp_path / ".local" / "bin" / "altero")
+        failed = subprocess.CompletedProcess([], 1, stdout="", stderr="")
+        with patch.object(bundle.subprocess, "run", return_value=failed), \
+                pytest.raises(ClaudeSwitchError, match="sudo ln -sf"):
+            bundle.install_cli_tool(home=tmp_path)
+        assert not link.is_symlink()
+        assert not (tmp_path / ".zprofile").exists()
+
+    def test_replaces_a_dangling_link(self, tmp_path, monkeypatch, system_bin):
         exe = _freeze(monkeypatch, tmp_path / "Applications" / "Altero.app")
-        link = tmp_path / ".local" / "bin" / "altero"
-        link.parent.mkdir(parents=True)
+        link = system_bin / "altero"
         link.symlink_to(tmp_path / "moved-away" / "altero")
         bundle.install_cli_tool(home=tmp_path)
         assert os.readlink(link) == str(exe)
 
-    def test_refuses_from_the_disk_image(self, tmp_path, monkeypatch):
+    def test_replaces_a_link_into_another_altero_app(self, tmp_path, monkeypatch, system_bin):
+        old = _executable(tmp_path / "Old" / "Altero.app" / ENGINE_REL)
+        exe = _freeze(monkeypatch, tmp_path / "Applications" / "Altero.app")
+        link = system_bin / "altero"
+        link.symlink_to(old)
+        bundle.install_cli_tool(home=tmp_path)
+        assert os.readlink(link) == str(exe)
+
+    def test_refuses_from_the_disk_image(self, tmp_path, monkeypatch, system_bin):
         _freeze(monkeypatch, tmp_path / "AppTranslocation" / "Z" / "Altero.app")
         with pytest.raises(ClaudeSwitchError, match="Applications"):
             bundle.install_cli_tool(home=tmp_path)
+        assert not (system_bin / "altero").exists()
         assert not (tmp_path / ".local" / "bin" / "altero").exists()
 
     def test_only_from_the_app(self, tmp_path):
         with pytest.raises(ClaudeSwitchError, match="only be installed from Altero.app"):
             bundle.install_cli_tool(home=tmp_path)
+        assert not bundle.cli_tool_installed(home=tmp_path)
