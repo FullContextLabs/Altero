@@ -125,6 +125,79 @@ altero service logs -f         # macOS: follow its events
 
 `altero purge` removes Altero's data and stored credentials. It does not touch your Claude Code login.
 
+## Uninstall
+
+Removing the app or the CLI keeps your accounts. To delete them too, see [Remove your data](#remove-your-data), and do that first: it needs the `altero` command.
+
+### Homebrew
+
+```bash
+brew uninstall --cask altero
+```
+
+This stops the background services, quits the app and removes Altero.app, the `altero` link and the two LaunchAgents. To also remove logs and the widget container, use `brew uninstall --zap --cask altero`.
+
+If you used **Install Command Line Tool…** in the app, remove its link too (it is owned by root):
+
+```bash
+sudo rm /usr/local/bin/altero
+```
+
+If it fell back to `~/.local/bin`, run `rm ~/.local/bin/altero` and delete the `# added by Altero` block from `~/.zprofile`.
+
+### macOS: Altero.app (DMG)
+
+1. Quit Altero from its menu bar, then stop the background services:
+
+   ```bash
+   for label in menubar auto; do
+     launchctl bootout gui/$(id -u)/com.fullcontextlabs.altero.$label
+   done
+   ```
+
+   The plists are what start them at login. Remove them, or they come back at the next login:
+
+   ```bash
+   rm -f ~/Library/LaunchAgents/com.fullcontextlabs.altero.{menubar,auto}.plist
+   ```
+2. Delete **Altero** from Applications.
+3. Remove the command line links, if you installed them:
+
+   ```bash
+   sudo rm -f /usr/local/bin/altero
+   rm -f ~/.local/bin/altero
+   ```
+
+   If Altero added `~/.local/bin` to your PATH, delete the `# added by Altero` block from `~/.zprofile`.
+4. Optional leftovers:
+
+   ```bash
+   rm -f ~/Library/Logs/com.fullcontextlabs.altero.*
+   rm -rf ~/Library/Containers/com.fullcontextlabs.altero.widget
+   ```
+
+The widget can keep running after the app is gone. Remove it from the desktop or Notification Center, or log out.
+
+### uv or pipx
+
+On macOS, stop the background services first. The LaunchAgents point at the `altero` command and would otherwise keep trying to start it. Use the commands in step 1 above, and remove the plists.
+
+```bash
+uv tool uninstall altero
+# or
+pipx uninstall altero
+```
+
+### Remove your data
+
+`~/.altero` holds your accounts and credentials. Deleting it is permanent and cannot be undone. On macOS the credentials also live in the Keychain, so run this before uninstalling instead of deleting the folder:
+
+```bash
+altero purge
+```
+
+It removes the data directory and the stored credentials, and does not touch your Claude Code login. See [Data](#data) for where each platform keeps them.
+
 ## Documentation
 
 - [ARCHITECTURE.md](ARCHITECTURE.md): the backend, the surfaces and the snapshot contract
