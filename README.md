@@ -145,6 +145,8 @@ sudo rm /usr/local/bin/altero
 
 If it fell back to `~/.local/bin`, run `rm ~/.local/bin/altero` and delete the `# added by Altero` block from `~/.zprofile`.
 
+The widget can keep running after the app is gone. Remove it from the desktop or Notification Center, or log out.
+
 ### macOS: Altero.app (DMG)
 
 1. Quit Altero from its menu bar, then stop the background services:
@@ -180,7 +182,16 @@ The widget can keep running after the app is gone. Remove it from the desktop or
 
 ### uv or pipx
 
-On macOS, stop the background services first. The LaunchAgents point at the `altero` command and would otherwise keep trying to start it. Use the commands in step 1 above, and remove the plists.
+On macOS, stop the background services first. The LaunchAgents point at the `altero` command and would otherwise keep trying to start it.
+
+```bash
+for label in menubar auto; do
+  launchctl bootout gui/$(id -u)/com.fullcontextlabs.altero.$label
+done
+rm -f ~/Library/LaunchAgents/com.fullcontextlabs.altero.{menubar,auto}.plist
+```
+
+Then remove the package:
 
 ```bash
 uv tool uninstall altero
