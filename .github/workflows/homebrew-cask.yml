@@ -1,0 +1,53 @@
+# Updates version and sha256 of Casks/altero.rb in FullContextLabs/homebrew-tap
+# when a release is published. Needs the secret HOMEBREW_TAP_TOKEN: a fine-grained
+# PAT scoped to FullContextLabs/homebrew-tap only, with Contents read/write.
+name: Update Homebrew cask
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download DMG and compute sha256
+        id: dmg
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          v="${TAG#v}"
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "unexpected tag: $TAG" >&2; exit 1; }
+          # The asset may not be attached yet when the release event fires.
+          for i in 1 2 3 4 5 6; do
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "Altero-$v.dmg" && break
+            [ "$i" = 6 ] && { echo "Altero-$v.dmg not found on $TAG" >&2; exit 1; }
+            sleep 20
+          done
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "sha=$(sha256sum "Altero-$v.dmg" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7
+        with:
+          repository: FullContextLabs/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Bump cask
+        env:
+          VERSION: ${{ steps.dmg.outputs.version }}
+          SHA: ${{ steps.dmg.outputs.sha }}
+        run: |
+          sed -i -E "s/^(  version \").*(\")/\1$VERSION\2/; s/^(  sha256 \").*(\")/\1$SHA\2/" Casks/altero.rb
+          if git diff --quiet; then
+            echo "Cask already at $VERSION"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "altero $VERSION"
+          git push

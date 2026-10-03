@@ -105,6 +105,19 @@ everything that is missing at once.
    Mark test builds `--prerelease`: GitHub's "latest" skips them, so installed
    apps are not told to update to one.
 
+5. **Homebrew cask.** Publishing a non-prerelease triggers
+   `.github/workflows/homebrew-cask.yml`, which updates `version` and `sha256`
+   in `Casks/altero.rb` of `FullContextLabs/homebrew-tap` (secret
+   `HOMEBREW_TAP_TOKEN`). Check the run, then `brew update && brew info --cask
+   fullcontextlabs/tap/altero`. Manual fallback, in a clone of the tap:
+
+   ```bash
+   v=0.1.4
+   sha=$(shasum -a 256 build/app/Altero-$v.dmg | cut -d' ' -f1)
+   sed -i '' -E "s/^(  version \").*(\")/\1$v\2/; s/^(  sha256 \").*(\")/\1$sha\2/" Casks/altero.rb
+   brew audit --cask --online fullcontextlabs/tap/altero && git commit -am "altero $v" && git push
+   ```
+
 ## Upgrades
 
 The engine loads Python modules lazily from files inside the app, so an app
@@ -112,8 +125,8 @@ replaced while its backend or menu bar runs can crash them on a later import.
 `packaging/install-app` avoids that by stopping those services first. A DMG
 user does the same by quitting Altero from the menu bar before replacing the
 app; opening the new app reinstalls the services on the new version. The
-Homebrew cask, when it exists, will stop and restart them in its
-`preflight`/`postflight` and remove the LaunchAgents on uninstall.
+Homebrew cask stops them before it replaces or removes the app, and removes
+the LaunchAgents on uninstall. It does not relaunch Altero or touch `~/.altero`.
 
 ## Local and CI builds
 
