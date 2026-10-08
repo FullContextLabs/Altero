@@ -1,6 +1,8 @@
-# Updates version and sha256 of Casks/altero.rb in FullContextLabs/homebrew-tap
-# when a release is published. Needs the secret HOMEBREW_TAP_TOKEN: a fine-grained
-# PAT scoped to FullContextLabs/homebrew-tap only, with Contents read/write.
+# Opens a PR on FullContextLabs/homebrew-tap that updates version and sha256 of
+# Casks/altero.rb when a release is published (the tap's main takes no direct
+# pushes). Needs the secret HOMEBREW_TAP_TOKEN: a fine-grained PAT scoped to
+# FullContextLabs/homebrew-tap only, with Contents read/write and Pull requests
+# read/write. The owner merges the PR.
 name: Update Homebrew cask
 
 on:
@@ -39,15 +41,26 @@ jobs:
 
       - name: Bump cask
         env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           VERSION: ${{ steps.dmg.outputs.version }}
           SHA: ${{ steps.dmg.outputs.sha }}
         run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "unexpected version: $VERSION" >&2; exit 1; }
           sed -i -E "s/^(  version \").*(\")/\1$VERSION\2/; s/^(  sha256 \").*(\")/\1$SHA\2/" Casks/altero.rb
           if git diff --quiet; then
             echo "Cask already at $VERSION"
             exit 0
           fi
+          branch="bump-altero-$VERSION"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
           git commit -am "altero $VERSION"
-          git push
+          # A rerun rebuilds the same commit; overwrite this bump branch only.
+          git push --force origin "$branch"
+          if [ -n "$(gh pr list -R FullContextLabs/homebrew-tap --head "$branch" --state open --json number --jq '.[].number')" ]; then
+            echo "PR for $branch already open"
+            exit 0
+          fi
+          gh pr create -R FullContextLabs/homebrew-tap --base main --head "$branch" \
+            --title "altero $VERSION" --body "Bump the cask to $VERSION (from the release workflow in FullContextLabs/Altero)."
