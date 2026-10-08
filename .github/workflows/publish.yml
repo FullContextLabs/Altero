@@ -5,7 +5,25 @@ on:
     types: [published]
 
 jobs:
+  verify-tag-on-main:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Require the released commit to be on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # GITHUB_SHA on a release event is the tagged commit. "behind" or
+          # "identical" means it is reachable from main.
+          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$GITHUB_SHA" --jq .status) || status="error"
+          case "$status" in
+            identical|behind) echo "$GITHUB_SHA is on main ($status)" ;;
+            *) echo "::error::Release commit $GITHUB_SHA is not on main (compare status: $status); refusing to release."; exit 1 ;;
+          esac
+
   publish:
+    needs: verify-tag-on-main
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
