@@ -284,7 +284,3 @@ class TestStrictRosterReadBranches:
         p = tmp_path / "config.json"
         p.write_text("[1, 2, 3]")
         assert self._switcher(tmp_path)._read_json(p) is None
-
-
-def test_ci_ok_red_proof():
-    assert False, "deliberate failure for ci-ok RED proof"
